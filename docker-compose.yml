@@ -1,0 +1,33 @@
+# 一键启动：mysql + fastapi 两个服务
+# 用法：docker compose up -d
+services:
+  mysql:
+    image: mysql:8
+    container_name: copilot-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: copilot
+    ports:
+      - "3307:3306"        # 宿主机 3307 → 容器内 3306（绕开本机 3306）
+    volumes:
+      - mysql_data:/var/lib/mysql   # 数据持久化，容器删了数据还在
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  fastapi:
+    build: ./backend
+    container_name: copilot-fastapi
+    environment:
+      # 容器内部用服务名 mysql 访问数据库
+      DATABASE_URL: mysql+pymysql://root:root@mysql:3306/copilot
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy   # 等 MySQL 健康了再启动后端
+
+volumes:
+  mysql_data:
