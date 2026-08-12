@@ -16,3 +16,6 @@ venv/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 开发日志（只在本地，不推 GitHub）
+docs/development_log.md
