@@ -20,6 +20,7 @@ def create_user(db: Session, data: UserCreate) -> User:
     user = User(
         username=data.username,
         email=data.email,
+        phone=data.phone,
         hashed_password=hash_password(data.password),
         role=data.role,
     )

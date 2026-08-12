@@ -5,6 +5,7 @@ class UserCreate(BaseModel):
     """注册请求体"""
     username: str
     password: str
+    phone: str | None = None
     email: EmailStr | None = None
     role: str = "employee"
 
@@ -27,6 +28,7 @@ class UserOut(BaseModel):
     id: int
     username: str
     email: str | None
+    phone: str | None
     role: str
 
     class Config:
