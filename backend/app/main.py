@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.v1 import users
+from app.api.v1 import users, documents
 
 app = FastAPI(
     title="Enterprise AI Copilot API",
@@ -10,6 +10,8 @@ app = FastAPI(
 
 # 注册 v1 用户路由
 app.include_router(users.router, prefix="/api/v1")
+# 注册 v1 文档路由
+app.include_router(documents.router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -19,3 +19,10 @@ Thumbs.db
 
 # 开发日志（只在本地，不推 GitHub）
 docs/development_log.md
+
+# 上传的文件（运行时生成，不进 Git）
+backend/app/storage/files/*
+!backend/app/storage/files/.gitkeep
+
+# 测试用的 PDF（临时文件）
+*.pdf

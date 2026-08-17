@@ -9,7 +9,8 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
-    kb_id = Column(Integer, nullable=False)  # 外键 → knowledge_bases.id（属于哪个知识库）
+    knowledge_base_id = Column(Integer, nullable=False)  # 外键 → knowledge_bases.id
     filename = Column(String(255), nullable=False)  # 文件名
-    status = Column(String(20), default="pending")  # pending处理中 / done已完成
+    file_path = Column(String(500), nullable=False)  # 文件磁盘路径（storage/files/xxx.pdf）
+    status = Column(String(20), default="uploaded")  # uploaded已上传 / processed已解析
     created_time = Column(DateTime(timezone=True), server_default=func.now())
