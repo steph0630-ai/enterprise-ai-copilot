@@ -7,7 +7,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
+from app.ai.embedding import embedding_service
 from app.models.document import Document
+from app.models.document_chunk import DocumentChunk
+from app.vectorstore.store import vector_store
 
 # 上传文件的存放目录（相对 backend 根目录）
 # 用 Path 对象，自动处理 Windows/Linux 的路径分隔符差异
@@ -101,3 +104,53 @@ def split_text(pages_text: list[str], chunk_size: int = 500, chunk_overlap: int 
     # 3. 切分，返回 chunk 列表
     chunks = splitter.split_text(full_text)
     return chunks
+
+
+def ingest_document(db: Session, document_id: int, filename: str) -> int:
+    """上传后的完整处理：解析 → 切分 → 向量化 → 存入向量库 + chunks 表
+
+    这是"入库"链路的核心（Phase 6）：
+    把一份 PDF 变成向量库里可被检索的一堆 chunk。
+
+    返回：切出来的 chunk 数量
+    """
+    # 1. 解析 PDF（用绝对路径，不依赖运行时的工作目录）
+    abs_path = STORAGE_DIR / filename
+    pages_text = parse_pdf(str(abs_path))
+
+    # 2. 切块
+    chunks = split_text(pages_text)
+
+    # 空文档（如扫描件没有文本层）就跳过向量化
+    if not chunks:
+        return 0
+
+    # 3. 批量向量化（一次 API 请求搞定所有 chunk，省往返）
+    embeddings = embedding_service.embed_documents(chunks)
+
+    # 4. 存进向量库（Chroma），带上来源元信息（可追溯）
+    ids = [f"doc_{document_id}_chunk_{i}" for i in range(len(chunks))]
+    metadatas = [
+        {"source": filename, "document_id": document_id, "chunk_index": i}
+        for i in range(len(chunks))
+    ]
+    vector_store.add(
+        ids=ids,
+        embeddings=embeddings,
+        documents=chunks,
+        metadatas=metadatas,
+    )
+
+    # 5. 把 chunk 也记到 MySQL（document_chunks 表），便于追溯
+    for i, chunk in enumerate(chunks):
+        db.add(
+            DocumentChunk(
+                document_id=document_id,
+                content=chunk,
+                chunk_index=i,
+                vector_id=ids[i],
+            )
+        )
+    db.commit()
+
+    return len(chunks)

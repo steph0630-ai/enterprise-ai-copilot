@@ -24,5 +24,8 @@ docs/development_log.md
 backend/app/storage/files/*
 !backend/app/storage/files/.gitkeep
 
+# 向量库数据（运行时生成，不进 Git）
+backend/app/storage/chroma/
+
 # 测试用的 PDF（临时文件）
 *.pdf

@@ -18,5 +18,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1天
 
+    # Embedding 相关（硅基流动 SiliconFlow 的 OpenAI 兼容接口）
+    # 真实 key 放 .env，这里留空兜底
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = "https://api.siliconflow.cn/v1"
+    EMBEDDING_MODEL: str = "BAAI/bge-m3"  # 中文 embedding 模型
+
 
 settings = Settings()
