@@ -38,6 +38,11 @@ try:
             old.employee_no = new_no
             print(f"[升级] 老工号 {old_no} → {new_no}")
 
+    # 关键：先把"升级"落库。SessionLocal 是 autoflush=False，
+    # 升级只改了内存对象、数据库没动；不 commit 的话，下面"查重 E001"
+    # 查到的是旧库（还没有 E001），就会再建一个 → 唯一索引冲突。
+    db.commit()
+
     for u in USERS:
         existing = db.query(User).filter(User.employee_no == u["employee_no"]).first()
         if existing:

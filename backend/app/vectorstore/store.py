@@ -44,6 +44,14 @@ class VectorStore:
             metadatas=metadatas,
         )
 
+    def delete_by_document(self, document_id: int) -> None:
+        """删除某个文档的全部向量（Day 14：文档管理）
+
+        Chroma 支持按 metadata 过滤删除：我们入库时每块向量都带了
+        {"document_id": ...}，这里按它精确匹配，把该文档的向量一次清空。
+        """
+        self.collection.delete(where={"document_id": document_id})
+
     def search(self, query_embedding: list[float], k: int = 3) -> dict:
         """按查询向量找最相似的 k 个，返回干净的 1 层列表"""
         result = self.collection.query(

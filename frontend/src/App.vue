@@ -4,6 +4,7 @@
 // Day 12：登录才能用——没 token 显示登录页，请求带 Authorization 头，401 回登录页
 import { ref, nextTick } from 'vue'
 import Login from './components/Login.vue'
+import AdminPanel from './components/AdminPanel.vue'  // Day 14：管理后台（只有管理员能进）
 
 // 登录态（存 localStorage，刷新不丢）：
 // token 为空 = 未登录，显示登录页
@@ -17,6 +18,10 @@ function onLogin(access_token, userInfo) {
   localStorage.setItem('user', JSON.stringify(userInfo))
 }
 
+// 双入口（Day 14）：'chat' 聊天页 / 'admin' 管理后台
+// 只有管理员能看到并切到 admin；员工永远停在聊天页
+const view = ref('chat')
+
 function logout() {
   token.value = ''
   user.value = null
@@ -24,6 +29,7 @@ function logout() {
   localStorage.removeItem('user')
   messages.value = []
   conversationId.value = ''
+  view.value = 'chat'
 }
 
 // 消息列表：{ role: 'user' | 'assistant', content, tools }
@@ -142,10 +148,21 @@ function scrollBottom() {
         <el-tag size="small" :type="user?.role === 'admin' ? 'danger' : 'info'">
           {{ user?.role === 'admin' ? '管理员' : user?.department || '员工' }}
         </el-tag>
+        <!-- Day 14 双入口：只有管理员有这个按钮，员工根本看不到 -->
+        <el-button
+          v-if="user?.role === 'admin'"
+          size="small"
+          type="primary"
+          plain
+          @click="view = view === 'admin' ? 'chat' : 'admin'"
+        >
+          {{ view === 'admin' ? '返回聊天' : '管理后台' }}
+        </el-button>
         <el-button size="small" @click="logout">退出</el-button>
       </div>
     </header>
 
+    <template v-if="view === 'chat'">
     <main class="chat">
       <div class="messages" ref="listRef">
         <div v-if="messages.length === 0" class="empty">
@@ -177,6 +194,10 @@ function scrollBottom() {
         <el-button type="primary" :loading="loading" @click="send">发送</el-button>
       </footer>
     </main>
+    </template>
+
+    <!-- Day 14：管理员切到管理后台（文档/用户管理） -->
+    <AdminPanel v-else :token="token" />
   </div>
 </template>
 

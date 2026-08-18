@@ -47,3 +47,12 @@ def get_current_user(
     if user is None:
         raise credentials_exc
     return user
+
+
+def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
+    """管理接口专用：必须是 admin，否则 403（Day 14 双端分离的核心拦截）"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限"
+        )
+    return current_user

@@ -28,6 +28,19 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserRoleUpdate(BaseModel):
+    """管理员改角色请求体（Day 14）：只允许在 employee / admin 之间切换"""
+
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in ("employee", "admin"):
+            raise ValueError("角色只能是 employee 或 admin")
+        return v
+
+
 class UserOut(BaseModel):
     """返回给前端的用户信息（绝不返回 hashed_password）"""
     id: int

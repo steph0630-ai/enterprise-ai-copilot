@@ -154,3 +154,33 @@ def ingest_document(db: Session, document_id: int, filename: str) -> int:
     db.commit()
 
     return len(chunks)
+
+
+def delete_document(db: Session, document_id: int) -> Document | None:
+    """删除一个文档（Day 14 文档管理）
+
+    顺序很关键：先清"引用"（向量库、chunks 表），再删"主体"（记录、文件）。
+    从外向里删，避免删了主体还留着悬空的向量/chunk。
+
+    返回被删的 Document；不存在返回 None。
+    """
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if doc is None:
+        return None
+
+    # 1. 清向量库：按 metadata 里的 document_id 过滤删除
+    vector_store.delete_by_document(document_id)
+
+    # 2. 清 chunks 表
+    db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+
+    # 3. 删磁盘文件（file_path 是相对 backend 根目录存的，转绝对路径）
+    backend_root = Path(__file__).resolve().parent.parent.parent
+    abs_path = backend_root / doc.file_path
+    if abs_path.exists():
+        abs_path.unlink()
+
+    # 4. 删记录
+    db.delete(doc)
+    db.commit()
+    return doc
