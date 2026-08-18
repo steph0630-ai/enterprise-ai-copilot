@@ -9,7 +9,8 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, index=True, nullable=False)  # 登录名，唯一
+    employee_no = Column(String(50), unique=True, index=True, nullable=False)  # 工号=登录账号，唯一（Day 13 从 username 改名）
+    name = Column(String(50), nullable=False, server_default="")  # 姓名，显示用，可重复（Day 13 新增）
     email = Column(String(120), unique=True, index=True, nullable=True)
     hashed_password = Column(String(255), nullable=False)  # 只存加密后的密码
     role = Column(String(20), default="employee")  # employee / admin

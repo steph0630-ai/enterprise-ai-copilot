@@ -42,7 +42,7 @@ def _build_messages(
     system = {
         "role": "system",
         "content": (
-            f"你是企业智能助手。当前用户：{user.username}，"
+            f"你是企业智能助手。当前用户：{user.name}（工号 {user.employee_no}），"
             f"角色：{user.role}，部门：{user.department or '未分配'}。"
         ),
     }

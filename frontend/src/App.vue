@@ -135,7 +135,10 @@ function scrollBottom() {
         <p class="subtitle">问知识、查数据——Agent 自动判断并调用工具</p>
       </div>
       <div class="user-box">
-        <span class="user-name">{{ user?.username }}</span>
+        <div class="whoami">
+          <span class="user-name">{{ user?.name }}</span>
+          <span class="user-no">{{ user?.employee_no }}</span>
+        </div>
         <el-tag size="small" :type="user?.role === 'admin' ? 'danger' : 'info'">
           {{ user?.role === 'admin' ? '管理员' : user?.department || '员工' }}
         </el-tag>
@@ -207,9 +210,22 @@ function scrollBottom() {
   gap: 8px;
 }
 
+/* 姓名 + 工号竖排：姓名大、工号小 */
+.whoami {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+}
+
 .user-name {
   font-size: 14px;
   color: #1f2329;
+}
+
+.user-no {
+  font-size: 11px;
+  color: #86909c;
 }
 
 .subtitle {

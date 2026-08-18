@@ -18,8 +18,8 @@ def register(data: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(data: UserLogin, db: Session = Depends(get_db)):
-    """登录：验证用户名密码 → 生成 JWT 返回"""
-    user = user_service.authenticate(db, data.username, data.password)
+    """登录：验证工号密码 → 生成 JWT 返回"""
+    user = user_service.authenticate(db, data.employee_no, data.password)
     token = create_access_token({"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer"}
 

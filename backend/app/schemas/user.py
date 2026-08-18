@@ -7,7 +7,8 @@ class UserCreate(BaseModel):
     注意：没有 role 字段——角色必须由后端强制（见 user_service.create_user），
     绝不能让客户端自选，否则任何人都能注册成管理员（Day 12 修的漏洞）。
     """
-    username: str
+    employee_no: str  # 工号（登录账号，唯一）
+    name: str  # 姓名（必填，显示用，可重复）
     password: str
     phone: str | None = None
     email: EmailStr | None = None
@@ -22,15 +23,16 @@ class UserCreate(BaseModel):
 
 
 class UserLogin(BaseModel):
-    """登录请求体"""
-    username: str
+    """登录请求体：工号 + 密码（姓名不是登录凭据，重名有歧义）"""
+    employee_no: str
     password: str
 
 
 class UserOut(BaseModel):
     """返回给前端的用户信息（绝不返回 hashed_password）"""
     id: int
-    username: str
+    employee_no: str
+    name: str
     email: str | None
     phone: str | None
     role: str

@@ -9,11 +9,14 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | INT | 主键 |
-| username | VARCHAR | 登录名 |
-| password_hash | VARCHAR | 加密后的密码（不存明文） |
+| employee_no | VARCHAR | 工号（登录账号，唯一；Day 13 由 username 改名） |
+| name | VARCHAR | 姓名（显示用，可重复，Day 13 新增） |
+| email | VARCHAR | 邮箱（唯一，选填） |
+| phone | VARCHAR | 手机号（选填） |
+| hashed_password | VARCHAR | 加密后的密码（不存明文） |
 | role | VARCHAR | `employee` 普通员工 / `admin` 管理员 |
 | department | VARCHAR | 部门（权限过滤用） |
-| created_at | DATETIME | 创建时间 |
+| created_time | DATETIME | 创建时间 |
 
 ### products（产品）
 
