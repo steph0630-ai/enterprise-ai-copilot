@@ -25,7 +25,7 @@ class AgentService:
     def __init__(self) -> None:
         self.llm = llm_service  # 复用单例，不重复建客户端
 
-    def answer(self, question: str, db: Session, max_rounds: int = 4) -> dict:
+    def answer(self, question: str, db: Session, max_rounds: int = 5) -> dict:
         """回答一个问题，返回 {answer, tools_used}"""
         # 1. 初始消息：只有用户问题
         messages = [{"role": "user", "content": question}]

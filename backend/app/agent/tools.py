@@ -4,9 +4,12 @@
 description 写得好不好，直接决定模型能不能选对工具。
 """
 
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.models.order import Order
 from app.services.rag_service import rag_service
 
 
@@ -34,17 +37,23 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "query_orders",
+            "name": "query_data",
             "description": (
-                "查询订单统计数据。当用户询问订单数量、订单金额等数据类问题时使用。"
-                "按部门查询，返回该部门的订单笔数和总金额。"
+                "根据用户的问题，针对 orders 表生成一条 SELECT 语句并执行，返回查询结果。"
+                "当用户询问订单数量、金额等数据类问题时使用。\n"
+                "orders 表结构：\n"
+                "- id: INTEGER，主键\n"
+                "- department: VARCHAR(50)，部门名称，如 销售一部、销售二部、市场部\n"
+                "- amount: DECIMAL(10,2)，订单金额\n"
+                "- created_at: DATETIME，下单时间（示例数据都是 2026 年 8 月）\n"
+                "规则：只允许生成 SELECT 语句，禁止 DELETE/UPDATE/INSERT/DROP；只允许一条语句。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "department": {"type": "string", "description": "部门名称，如 销售一部"},
+                    "sql": {"type": "string", "description": "要执行的 SELECT 语句"},
                 },
-                "required": ["department"],
+                "required": ["sql"],
             },
         },
     },
@@ -59,15 +68,54 @@ def _search_knowledge(query: str, top_k: int = 3) -> dict:
     return {"answer": result["answer"], "sources": result["sources"]}
 
 
-def _query_orders(db: Session, department: str) -> dict:
-    """数据类工具：查订单表，返回该部门的笔数和总金额"""
-    rows = db.query(Order).filter(Order.department == department).all()
-    total = round(sum(float(o.amount) for o in rows), 2)
-    return {
-        "department": department,
-        "订单笔数": len(rows),
-        "总金额": total,
-    }
+def _json_safe(value):
+    """把 SQL 查出来的值转成 JSON 能序列化的类型
+
+    MySQL 的 DECIMAL 返回 Decimal、DATETIME 返回 datetime，
+    json.dumps 都不认识，必须转成 float / ISO 字符串。
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _query_data(db: Session, sql: str) -> dict:
+    """数据类工具：执行模型生成的 SELECT，返回结果（NL2SQL，Day 8）
+
+    安全三件事：
+      1. 只允许 SELECT（防止模型把表删了/改了）
+      2. 只允许单条语句（去掉结尾分号后，再出现分号 = 多条，拒绝）
+      3. 最多返回 20 行（防止把整张表倒进上下文，token 爆炸）
+    """
+    cleaned = sql.strip()
+    # 去掉结尾分号后，再出现分号就是多条语句
+    body = cleaned.rstrip(";").strip()
+    if not body.lower().startswith("select"):
+        return {"error": "只允许 SELECT 查询"}
+    if ";" in body:
+        return {"error": "只允许单条 SQL 语句"}
+
+    try:
+        result = db.execute(text(body))
+        if not result.returns_rows:
+            return {"error": "这不是一条查询语句"}
+        rows = result.fetchall()
+        columns = list(result.keys())
+        # 每个值过一遍 _json_safe，避免 Decimal/datetime 撑爆 json.dumps
+        data = [
+            {k: _json_safe(v) for k, v in zip(columns, r)}
+            for r in rows
+        ]
+        return {
+            "columns": columns,
+            "rows": data[:20],  # 截断，最多 20 行
+            "总行数": len(rows),  # 告诉模型实际有多少行（可能被截断）
+        }
+    except Exception as e:
+        # 错误回传给模型，让它自己重写 SQL（错误自愈）
+        return {"error": f"SQL 执行失败：{e}"}
 
 
 # ========== 执行器：按名字找到函数并调用 ==========
@@ -76,6 +124,6 @@ def run_tool(name: str, arguments: dict, db: Session) -> dict:
     """按工具名分发到具体函数，返回结果（给 Agent 循环用）"""
     if name == "search_knowledge":
         return _search_knowledge(**arguments)
-    if name == "query_orders":
-        return _query_orders(db=db, **arguments)
+    if name == "query_data":
+        return _query_data(db=db, **arguments)
     return {"error": f"未知工具：{name}"}
