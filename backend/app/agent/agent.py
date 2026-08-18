@@ -25,10 +25,14 @@ class AgentService:
     def __init__(self) -> None:
         self.llm = llm_service  # 复用单例，不重复建客户端
 
-    def answer(self, question: str, db: Session, max_rounds: int = 5) -> dict:
-        """回答一个问题，返回 {answer, tools_used}"""
-        # 1. 初始消息：只有用户问题
-        messages = [{"role": "user", "content": question}]
+    def answer(self, messages: list[dict], db: Session, max_rounds: int = 5) -> dict:
+        """按给定消息列表走 Agent 循环，返回 {answer, tools_used}
+
+        Day 11 重构：不再自己拼"只有一个问题"的消息，
+        而是由接口层把"历史 + 当前问题"组装好传进来（多轮记忆）。
+        注意：本方法会原地往 messages 里追加 assistant/tool 消息，调用方传入的是新列表即可。
+        """
+        # 1. messages 就是初始上下文（含历史），直接开循环
         tools_used: list[str] = []
 
         for _ in range(max_rounds):
@@ -71,19 +75,17 @@ class AgentService:
 
         return {"answer": "已达最大轮次仍未给出答案", "tools_used": tools_used}
 
-    def answer_stream(self, question: str, db: Session, max_rounds: int = 5):
+    def answer_stream(self, messages: list[dict], db: Session, max_rounds: int = 5):
         """流式版 Agent：答案逐字往外吐（Day 10）
 
-        和 answer() 的区别：全程用流式接口 complete_stream()，
-        模型说一个字就 yield 一个字，前端能边收边显示（打字机效果）。
-        工具调用也走同一根流——模型"想调工具"这个动作也会被看到。
+        Day 11 重构：和 answer() 一样收"含历史的完整消息列表"，
+        多轮记忆由接口层组装，本方法专注"走循环、吐事件"。
 
         yield 的事件（SSE 帧，前端按 type 分发）：
             {"type": "token", "content": "..."}   模型吐的一段文字
             {"type": "tool",  "name": "..."}      准备调用某工具（前端可亮徽章）
             {"type": "done",  "tools_used": [...]} 全部结束
         """
-        messages = [{"role": "user", "content": question}]
         tools_used: list[str] = []
 
         for _ in range(max_rounds):

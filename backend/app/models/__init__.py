@@ -5,6 +5,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.chat_history import ChatHistory
+from app.models.conversation import Conversation, Message  # Day 11 多轮记忆
 from app.models.order import Order
 
 __all__ = [
@@ -13,5 +14,7 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "ChatHistory",
+    "Conversation",
+    "Message",
     "Order",
 ]

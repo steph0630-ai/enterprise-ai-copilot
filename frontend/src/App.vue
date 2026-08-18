@@ -8,6 +8,8 @@ const messages = ref([])
 const input = ref('')        // 输入框内容（v-model 双向绑定）
 const loading = ref(false)   // 等 Agent 回复时禁用按钮，防重复提交
 const listRef = ref(null)    // 消息容器 DOM 引用，用于滚动到底部
+// 会话 id（Day 11 多轮记忆）：空 = 新会话；后端第一帧 conv 事件会给一个真值
+const conversationId = ref('')
 
 async function send() {
   const question = input.value.trim()
@@ -21,11 +23,11 @@ async function send() {
   scrollBottom()
 
   try {
-    // 2. 调流式接口（经 Vite 代理转发到后端 8000）
+    // 2. 调流式接口（经 Vite 代理转发到后端 8000），带上会话 id 续上对话
     const res = await fetch('/api/v1/agent/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: question }),
+      body: JSON.stringify({ query: question, conversation_id: conversationId.value }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
@@ -66,7 +68,9 @@ function handleEvent(raw) {
   }
 
   const last = messages.value[messages.value.length - 1]
-  if (event.type === 'token') {
+  if (event.type === 'conv') {
+    conversationId.value = event.conversation_id  // 记下会话 id，下个问题带着它
+  } else if (event.type === 'token') {
     last.content += event.content      // 把新吐出来的字拼上去 → 打字机效果
     scrollBottom()
   } else if (event.type === 'tool') {
