@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.v1 import users, documents, knowledge, chat
+from app.api.v1 import users, documents, knowledge, chat, agent
 
 app = FastAPI(
     title="Enterprise AI Copilot API",
@@ -16,6 +16,8 @@ app.include_router(documents.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
 # 注册 v1 对话路由（Day 6：RAG 生成答案）
 app.include_router(chat.router, prefix="/api/v1")
+# 注册 v1 Agent 路由（Day 7：判断任务 + 调用工具）
+app.include_router(agent.router, prefix="/api/v1")
 
 
 @app.get("/health")

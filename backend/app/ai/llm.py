@@ -20,8 +20,30 @@ class LLMService:
             base_url=settings.LLM_BASE_URL,
         )
 
+    def complete(self, messages: list[dict], tools: list | None = None):
+        """底层对话：可带工具说明书，返回完整的消息对象
+
+        参数：
+            messages: OpenAI 格式的消息列表（[{role, content}, ...]）
+            tools: 工具说明书列表（可空；Agent 用它让模型"看见"工具）
+
+        返回：
+            模型返回的 message 对象（里面有 .content 和 .tool_calls）
+        """
+        kwargs = {
+            "model": settings.LLM_MODEL,
+            "messages": messages,
+            "temperature": settings.LLM_TEMPERATURE,  # 调低，知识问答要准不要创意
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message
+
     def chat(self, system_prompt: str, context: str, question: str) -> str:
         """给模型一份"作业单"（System + 资料 + 问题），拿到回答文字
+
+        Day 6 的 RAG 用这个；Day 7 的 Agent 用更底层的 complete()。
 
         参数：
             system_prompt: 角色和规则（比如"只依据资料回答，没有就说不知道"）
@@ -31,21 +53,18 @@ class LLMService:
         返回：
             模型生成的回答文字
         """
-        messages = [
-            # 第一段：System —— 角色 + 规则（防幻觉的主力在这）
-            {"role": "system", "content": system_prompt},
-            # 第二段：User —— 资料 + 问题，用【资料】标记包住，模型才分得清哪些是证据
-            {
-                "role": "user",
-                "content": f"【资料】\n{context}\n\n【问题】\n{question}",
-            },
-        ]
-        response = self.client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=messages,
-            temperature=settings.LLM_TEMPERATURE,  # 调低，知识问答要准不要创意
+        msg = self.complete(
+            [
+                # 第一段：System —— 角色 + 规则（防幻觉的主力在这）
+                {"role": "system", "content": system_prompt},
+                # 第二段：User —— 资料 + 问题，用【资料】标记包住，模型才分得清哪些是证据
+                {
+                    "role": "user",
+                    "content": f"【资料】\n{context}\n\n【问题】\n{question}",
+                },
+            ]
         )
-        return response.choices[0].message.content or ""
+        return msg.content or ""
 
 
 # 模块级单例：整个应用共用一个客户端

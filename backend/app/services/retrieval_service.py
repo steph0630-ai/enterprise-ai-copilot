@@ -29,10 +29,14 @@ class RetrievalService:
         for doc, meta, dist in zip(
             result["documents"], result["metadatas"], result["distances"]
         ):
+            # 防御：doc 为 None 说明是"幽灵条目"（索引和磁盘不同步，如外部改库后没重启），
+            # 直接跳过，别让脏数据进上下文；metadata 也可能是 None，用空 dict 兜底
+            if doc is None:
+                continue
             items.append(
                 {
                     "text": doc,
-                    "source": meta.get("source", "未知"),
+                    "source": (meta or {}).get("source", "未知"),
                     "distance": round(dist, 4),  # 距离越小越相似
                 }
             )

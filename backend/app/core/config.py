@@ -25,10 +25,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-m3"  # 中文 embedding 模型
 
     # LLM 对话相关（同一个硅基流动账号，key 一样）
-    # 生成答案的模型：Qwen2.5-7B 便宜够用、中文好；temperature 调低防自由发挥
+    # 模型选型教训（Day 7）：Qwen2.5-7B 不支持原生 tool_calls（返回空），
+    # Agent 要工具调用必须用 DeepSeek-V3；RAG 用 DeepSeek 效果也更好。
+    # temperature 调低防自由发挥
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.siliconflow.cn/v1"
-    LLM_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    LLM_MODEL: str = "deepseek-ai/DeepSeek-V3"
     LLM_TEMPERATURE: float = 0.2
 
 
