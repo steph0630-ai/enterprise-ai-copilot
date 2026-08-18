@@ -24,5 +24,12 @@ class Settings(BaseSettings):
     EMBEDDING_BASE_URL: str = "https://api.siliconflow.cn/v1"
     EMBEDDING_MODEL: str = "BAAI/bge-m3"  # 中文 embedding 模型
 
+    # LLM 对话相关（同一个硅基流动账号，key 一样）
+    # 生成答案的模型：Qwen2.5-7B 便宜够用、中文好；temperature 调低防自由发挥
+    LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = "https://api.siliconflow.cn/v1"
+    LLM_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    LLM_TEMPERATURE: float = 0.2
+
 
 settings = Settings()
