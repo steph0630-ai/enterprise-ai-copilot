@@ -71,6 +71,94 @@ class AgentService:
 
         return {"answer": "已达最大轮次仍未给出答案", "tools_used": tools_used}
 
+    def answer_stream(self, question: str, db: Session, max_rounds: int = 5):
+        """流式版 Agent：答案逐字往外吐（Day 10）
+
+        和 answer() 的区别：全程用流式接口 complete_stream()，
+        模型说一个字就 yield 一个字，前端能边收边显示（打字机效果）。
+        工具调用也走同一根流——模型"想调工具"这个动作也会被看到。
+
+        yield 的事件（SSE 帧，前端按 type 分发）：
+            {"type": "token", "content": "..."}   模型吐的一段文字
+            {"type": "tool",  "name": "..."}      准备调用某工具（前端可亮徽章）
+            {"type": "done",  "tools_used": [...]} 全部结束
+        """
+        messages = [{"role": "user", "content": question}]
+        tools_used: list[str] = []
+
+        for _ in range(max_rounds):
+            stream = self.llm.complete_stream(messages, tools=TOOLS)
+
+            text_parts: list[str] = []   # 本轮的纯文字（模型回答前可能先说一句"我来查"）
+            tool_calls: list[dict] = []  # 累计出来的工具调用
+            finish_reason = None         # 最后一个 chunk 的结束原因（兜底用）
+
+            for chunk in stream:
+                choice = chunk.choices[0]
+                delta = choice.delta
+                finish_reason = choice.finish_reason
+
+                # 1. 模型吐了文字 → 原样转给前端
+                if delta.content:
+                    text_parts.append(delta.content)
+                    yield {"type": "token", "content": delta.content}
+
+                # 2. 工具调用是"零散拼装"来的：同一个 index 是同一个调用，
+                #    名字/参数可能分几个 chunk 到，arguments 要一段段拼起来。
+                #    注意：流式 chunk 里没有 .message，工具调用只能从 delta 取。
+                for tc in delta.tool_calls or []:
+                    index = tc.index
+                    while len(tool_calls) <= index:
+                        tool_calls.append(
+                            {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        )
+                    if tc.id:
+                        tool_calls[index]["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        tool_calls[index]["function"]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        tool_calls[index]["function"]["arguments"] += tc.function.arguments
+
+            # 3. 安全网：个别平台不把 tool_calls 流式吐出来（delta 里没有），
+            #    但会用 finish_reason="tool_calls" 提示"我要调工具"。
+            #    这时改走非流式再问一次，把完整的 tool_calls 拿回来（只多花一次调用）。
+            if not tool_calls and finish_reason == "tool_calls":
+                msg = self.llm.complete(messages, tools=TOOLS)
+                tool_calls = [c.model_dump() for c in msg.tool_calls or []]
+
+            # 4. 这一轮没要工具 → 就是最终答案，收工
+            if not tool_calls:
+                yield {"type": "done", "tools_used": tools_used}
+                return
+
+            # 5. 要工具 → 把模型这句"带 tool_calls"的话原样加回历史（缺了它模型对不上号），
+            #    逐个执行工具，结果回传，回到循环顶再问一次
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "".join(text_parts),
+                    "tool_calls": tool_calls,
+                }
+            )
+            for call in tool_calls:
+                name = call["function"]["name"]
+                try:
+                    args = json.loads(call["function"]["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                tools_used.append(name)
+                yield {"type": "tool", "name": name}  # 让前端先亮起"正在调工具"的徽章
+                result = run_tool(name, args, db)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+
+        yield {"type": "done", "tools_used": tools_used}
+
 
 # 模块级单例
 agent_service = AgentService()

@@ -40,6 +40,25 @@ class LLMService:
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message
 
+    def complete_stream(self, messages: list[dict], tools: list | None = None):
+        """流式对话：返回一个"逐块生成器"，模型吐一个字吐一个字（Day 10）
+
+        和 complete() 的区别：加了 stream=True，不等完整回答，
+        而是把回答拆成一串 chunk 流回来，前端能边收边显示（打字机效果）。
+
+        返回：可迭代的 chunk 流，每个 chunk 里有 .choices[0].delta.content
+        （模型吐的文字）和 .delta.tool_calls（工具调用，可能是零散的）。
+        """
+        kwargs = {
+            "model": settings.LLM_MODEL,
+            "messages": messages,
+            "temperature": settings.LLM_TEMPERATURE,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        return self.client.chat.completions.create(**kwargs)
+
     def chat(self, system_prompt: str, context: str, question: str) -> str:
         """给模型一份"作业单"（System + 资料 + 问题），拿到回答文字
 
