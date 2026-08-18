@@ -21,8 +21,9 @@ from app.database.session import SessionLocal
 from app.models.user import User
 
 # (工号, 密码, 角色, 部门, 姓名)
+# E001 是 super_admin（超级管理员）——初始管理员，只有它能改角色（Day 15）
 USERS = [
-    {"employee_no": "E001", "password": "admin123", "role": "admin", "department": None, "name": "管理员"},
+    {"employee_no": "E001", "password": "admin123", "role": "super_admin", "department": None, "name": "管理员"},
     {"employee_no": "E002", "password": "123456", "role": "employee", "department": "销售一部", "name": "张三"},
     {"employee_no": "E003", "password": "123456", "role": "employee", "department": "市场部", "name": "李四"},
 ]

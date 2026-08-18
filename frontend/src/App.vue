@@ -2,7 +2,7 @@
 // 组合式 API：<script setup> 里写的变量/函数，模板里直接用（Day 9）
 // Day 10：send() 改成流式接收 SSE，Agent 的答案一个字一个字蹦出来
 // Day 12：登录才能用——没 token 显示登录页，请求带 Authorization 头，401 回登录页
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import Login from './components/Login.vue'
 import AdminPanel from './components/AdminPanel.vue'  // Day 14：管理后台（只有管理员能进）
 
@@ -21,6 +21,9 @@ function onLogin(access_token, userInfo) {
 // 双入口（Day 14）：'chat' 聊天页 / 'admin' 管理后台
 // 只有管理员能看到并切到 admin；员工永远停在聊天页
 const view = ref('chat')
+
+// Day 15：super_admin 和 admin 都能进管理后台（但只有 super_admin 能改角色）
+const isAdmin = computed(() => ['admin', 'super_admin'].includes(user.value?.role))
 
 function logout() {
   token.value = ''
@@ -145,12 +148,12 @@ function scrollBottom() {
           <span class="user-name">{{ user?.name }}</span>
           <span class="user-no">{{ user?.employee_no }}</span>
         </div>
-        <el-tag size="small" :type="user?.role === 'admin' ? 'danger' : 'info'">
-          {{ user?.role === 'admin' ? '管理员' : user?.department || '员工' }}
+        <el-tag size="small" :type="isAdmin ? 'danger' : 'info'">
+          {{ user?.role === 'super_admin' ? '超级管理员' : isAdmin ? '管理员' : user?.department || '员工' }}
         </el-tag>
         <!-- Day 14 双入口：只有管理员有这个按钮，员工根本看不到 -->
         <el-button
-          v-if="user?.role === 'admin'"
+          v-if="isAdmin"
           size="small"
           type="primary"
           plain
@@ -196,8 +199,8 @@ function scrollBottom() {
     </main>
     </template>
 
-    <!-- Day 14：管理员切到管理后台（文档/用户管理） -->
-    <AdminPanel v-else :token="token" />
+    <!-- Day 14：管理员切到管理后台（文档/用户管理）；Day 15：传 userRole 决定角色列能不能改 -->
+    <AdminPanel v-else :token="token" :user-role="user?.role" />
   </div>
 </template>
 

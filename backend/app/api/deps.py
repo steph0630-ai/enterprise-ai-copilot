@@ -49,10 +49,27 @@ def get_current_user(
     return user
 
 
+# 能进管理后台的角色（Day 15：super_admin 也是管理端的一员）
+ADMIN_ROLES = {"admin", "super_admin"}
+
+
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
-    """管理接口专用：必须是 admin，否则 403（Day 14 双端分离的核心拦截）"""
-    if current_user.role != "admin":
+    """管理接口专用：admin 或 super_admin，否则 403（Day 14 双端分离的核心拦截）"""
+    if current_user.role not in ADMIN_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限"
+        )
+    return current_user
+
+
+def get_current_super_admin(current_user: User = Depends(get_current_user)) -> User:
+    """超级管理员专用：只有 super_admin，否则 403（Day 15 防提权劫持）
+
+    只有它能改角色——普通管理员没有"授予权限"的能力，
+    提权劫持（员工升 admin 后反手降 admin）的链条第一步就断了。
+    """
+    if current_user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="需要超级管理员权限"
         )
     return current_user

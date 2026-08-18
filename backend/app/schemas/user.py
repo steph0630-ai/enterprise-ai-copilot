@@ -29,15 +29,19 @@ class UserLogin(BaseModel):
 
 
 class UserRoleUpdate(BaseModel):
-    """管理员改角色请求体（Day 14）：只允许在 employee / admin 之间切换"""
+    """改角色请求体（Day 14 新增，Day 15 加 super_admin）
+
+    只允许在 employee / admin / super_admin 之间切换。
+    注意：谁能调这个接口由 deps.get_current_super_admin 把关（只有超级管理员能改角色）。
+    """
 
     role: str
 
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        if v not in ("employee", "admin"):
-            raise ValueError("角色只能是 employee 或 admin")
+        if v not in ("employee", "admin", "super_admin"):
+            raise ValueError("角色只能是 employee / admin / super_admin")
         return v
 
 

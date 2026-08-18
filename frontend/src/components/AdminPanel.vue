@@ -7,7 +7,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
   token: { type: String, required: true },
+  userRole: { type: String, default: '' },  // Day 15：当前登录者角色，决定角色列能不能改
 })
+
+// 角色 → 显示名
+function roleLabel(role) {
+  return { employee: '员工', admin: '管理员', super_admin: '超级管理员' }[role] || role
+}
 
 // 请求头：管理接口都要"我是谁"
 function authHeaders() {
@@ -132,16 +138,33 @@ onMounted(() => {
           <el-table-column prop="department" label="部门" min-width="120">
             <template #default="{ row }">{{ row.department || '未分配' }}</template>
           </el-table-column>
-          <el-table-column label="角色" width="130">
+          <el-table-column label="角色" width="160">
             <template #default="{ row }">
-              <el-select v-model="row.role" size="small" @change="(v) => changeRole(row, v)">
+              <!-- Day 15：
+                只有超级管理员能改角色，且只能改 employee/admin（不能授予/撤销 super_admin）；
+                普通管理员和 super_admin 那行都只显示纯文本 -->
+              <el-select
+                v-if="props.userRole === 'super_admin' && row.role !== 'super_admin'"
+                v-model="row.role"
+                size="small"
+                @change="(v) => changeRole(row, v)"
+              >
                 <el-option label="员工" value="employee" />
                 <el-option label="管理员" value="admin" />
               </el-select>
+              <el-tag
+                v-else
+                size="small"
+                :type="row.role === 'super_admin' ? 'danger' : row.role === 'admin' ? 'warning' : 'info'"
+              >
+                {{ roleLabel(row.role) }}
+              </el-tag>
             </template>
           </el-table-column>
         </el-table>
-        <p class="hint">改成"管理员"后，对方重新登录就有管理后台了。改自己会被拒绝（防止锁死）。</p>
+        <p class="hint">
+          只有超级管理员能改角色，且只能在员工/管理员之间改。超级管理员角色只进不出，由种子脚本维护。
+        </p>
       </el-tab-pane>
     </el-tabs>
   </div>

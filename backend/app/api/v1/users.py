@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_admin, get_current_user, get_db
+from app.api.deps import (
+    get_current_admin,
+    get_current_super_admin,
+    get_current_user,
+    get_db,
+)
 from app.core.security import create_access_token
 from app.models.user import User
 from app.schemas.user import UserCreate, UserLogin, UserOut, UserRoleUpdate
@@ -44,18 +49,27 @@ def update_user_role(
     user_id: int,
     data: UserRoleUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能改角色
+    # Day 15：只有超级管理员能改角色。普通管理员无"授予权限"的能力，
+    # 否则会出现：A 升 X 为 admin → X 反手把 A 降成员工（提权劫持）。
+    current_user: User = Depends(get_current_super_admin),
 ):
-    """改角色（管理端用）：把员工提升为 admin / 把 admin 降为员工
+    """改角色（超级管理员专用）：只能 employee ↔ admin 之间切换
 
-    安全点：管理员不能改自己——否则把自己降成 employee，下次请求直接 403，
-    整个系统就没人能管理了（自己把自己锁死）。
+    安全点（Day 15 收紧）：
+    - 超级管理员不能改自己 → 防止自己把自己锁死（root 是最后的保险）；
+    - 超级管理员的角色不能通过接口改 → 防止 root 被另一个 root 夺权；
+    - 不能通过接口授予超级管理员 → 防止 root"克隆"出第二个自己再被反噬。
+    super_admin 这个角色只进不出，只能由运维/种子脚本创建（如 E001）。
     """
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     if user.id == current_user.id:
         raise HTTPException(status_code=400, detail="不能修改自己的角色")
+    if user.role == "super_admin":
+        raise HTTPException(status_code=400, detail="超级管理员的角色不能通过接口修改")
+    if data.role == "super_admin":
+        raise HTTPException(status_code=400, detail="不能通过接口授予超级管理员")
     user.role = data.role
     db.commit()
     db.refresh(user)
