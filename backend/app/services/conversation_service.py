@@ -14,13 +14,26 @@ from app.models.conversation import Conversation, Message
 
 
 class ConversationService:
-    def get_or_create(self, conversation_id: str, db: Session) -> Conversation:
-        """找到会话；前端没给 id / 给了不存在的 id → 新建，返回它"""
-        if conversation_id:
-            conv = db.get(Conversation, conversation_id)
+    def get_or_create(
+        self, conversation_id: str, user_id: int | None, db: Session
+    ) -> Conversation:
+        """找到自己的会话；前端没给 id / 给了不存在的 id / 是别人的 → 新建（Day 12）
+
+        隔离要点：按 (id AND user_id) 查——拿别人的会话 id 来问，也只会开新会话，
+        绝不会读到别人的对话历史。
+        """
+        if conversation_id and user_id:
+            conv = (
+                db.query(Conversation)
+                .filter(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
+                .first()
+            )
             if conv:
                 return conv
-        conv = Conversation(id=conversation_id or str(uuid4()))
+        conv = Conversation(id=conversation_id or str(uuid4()), user_id=user_id)
         db.add(conv)
         db.commit()
         return conv

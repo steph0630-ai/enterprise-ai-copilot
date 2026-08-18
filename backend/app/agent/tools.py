@@ -4,6 +4,7 @@
 description 写得好不好，直接决定模型能不能选对工具。
 """
 
+import copy
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -60,6 +61,23 @@ TOOLS = [
 ]
 
 
+def build_tools(user=None) -> list[dict]:
+    """给模型的工具说明书：非管理员时，把"只能查本部门"写进 query_data 描述（Day 12）
+
+    模型看不见代码，只看 description。要让模型遵守部门权限，
+    就得在说明书写清楚当前用户属于哪个部门、SQL 必须带上部门条件。
+    """
+    tools = copy.deepcopy(TOOLS)  # 每次复制一份，别污染全局的 TOOLS
+    if user and user.role != "admin" and user.department:
+        for t in tools:
+            if t["function"]["name"] == "query_data":
+                t["function"]["description"] += (
+                    f"\n权限：当前用户属于「{user.department}」，只能查询本部门的数据，"
+                    f"生成的 SQL 必须包含 department='{user.department}' 条件。"
+                )
+    return tools
+
+
 # ========== 实际执行函数（模型看不到这里） ==========
 
 def _search_knowledge(query: str, top_k: int = 3) -> dict:
@@ -81,13 +99,15 @@ def _json_safe(value):
     return value
 
 
-def _query_data(db: Session, sql: str) -> dict:
+def _query_data(db: Session, sql: str, user=None) -> dict:
     """数据类工具：执行模型生成的 SELECT，返回结果（NL2SQL，Day 8）
 
-    安全三件事：
+    安全防线（Day 8 三件事 + Day 12 部门权限）：
       1. 只允许 SELECT（防止模型把表删了/改了）
       2. 只允许单条语句（去掉结尾分号后，再出现分号 = 多条，拒绝）
       3. 最多返回 20 行（防止把整张表倒进上下文，token 爆炸）
+      4. 部门权限（非管理员）：SQL 必须包含本部门条件，否则拒绝
+         —— 拒绝后错误会回传给模型，它自己改写 SQL 再试（错误自愈）
     """
     cleaned = sql.strip()
     # 去掉结尾分号后，再出现分号就是多条语句
@@ -96,6 +116,17 @@ def _query_data(db: Session, sql: str) -> dict:
         return {"error": "只允许 SELECT 查询"}
     if ";" in body:
         return {"error": "只允许单条 SQL 语句"}
+
+    # 部门权限：非管理员必须查自己部门。生产上用只读账号 + 数据库视图/RLS，
+    # 这里用"SQL 里必须有本部门字样"做第 4 道防线，简单且能演示错误自愈。
+    if user and user.role != "admin":
+        if not (user.department and user.department in body):
+            return {
+                "error": (
+                    f"权限不足：你只能查询本部门（{user.department}）的数据，"
+                    f"请改写 SQL，加上 department='{user.department}' 的 WHERE 条件"
+                )
+            }
 
     try:
         result = db.execute(text(body))
@@ -120,10 +151,13 @@ def _query_data(db: Session, sql: str) -> dict:
 
 # ========== 执行器：按名字找到函数并调用 ==========
 
-def run_tool(name: str, arguments: dict, db: Session) -> dict:
-    """按工具名分发到具体函数，返回结果（给 Agent 循环用）"""
+def run_tool(name: str, arguments: dict, db: Session, user=None) -> dict:
+    """按工具名分发到具体函数，返回结果（给 Agent 循环用）
+
+    user 是当前登录用户（Day 12）：query_data 靠它做部门权限校验。
+    """
     if name == "search_knowledge":
         return _search_knowledge(**arguments)
     if name == "query_data":
-        return _query_data(db=db, **arguments)
+        return _query_data(db=db, user=user, **arguments)
     return {"error": f"未知工具：{name}"}

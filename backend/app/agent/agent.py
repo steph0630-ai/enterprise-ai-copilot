@@ -15,7 +15,7 @@ import json
 
 from sqlalchemy.orm import Session
 
-from app.agent.tools import TOOLS, run_tool
+from app.agent.tools import TOOLS, build_tools, run_tool
 from app.ai.llm import llm_service
 
 
@@ -25,11 +25,12 @@ class AgentService:
     def __init__(self) -> None:
         self.llm = llm_service  # 复用单例，不重复建客户端
 
-    def answer(self, messages: list[dict], db: Session, max_rounds: int = 5) -> dict:
+    def answer(self, messages: list[dict], db: Session, user=None, max_rounds: int = 5) -> dict:
         """按给定消息列表走 Agent 循环，返回 {answer, tools_used}
 
         Day 11 重构：不再自己拼"只有一个问题"的消息，
         而是由接口层把"历史 + 当前问题"组装好传进来（多轮记忆）。
+        Day 12 加 user：非管理员的工具说明书会带上部门限制，query_data 校验权限。
         注意：本方法会原地往 messages 里追加 assistant/tool 消息，调用方传入的是新列表即可。
         """
         # 1. messages 就是初始上下文（含历史），直接开循环
@@ -37,7 +38,8 @@ class AgentService:
 
         for _ in range(max_rounds):
             # 2. 问模型（带上工具说明书，让它"看见"有哪些工具可用）
-            msg = self.llm.complete(messages, tools=TOOLS)
+            #    非管理员：build_tools 会把"只能查本部门"写进 query_data 描述
+            msg = self.llm.complete(messages, tools=build_tools(user))
 
             # 3. 模型没要工具 → 这就是最终答案
             if not msg.tool_calls:
@@ -62,7 +64,7 @@ class AgentService:
                     args = {}
 
                 tools_used.append(name)
-                result = run_tool(name, args, db)
+                result = run_tool(name, args, db, user)  # user 带去部门权限
 
                 messages.append(
                     {
@@ -75,11 +77,12 @@ class AgentService:
 
         return {"answer": "已达最大轮次仍未给出答案", "tools_used": tools_used}
 
-    def answer_stream(self, messages: list[dict], db: Session, max_rounds: int = 5):
+    def answer_stream(self, messages: list[dict], db: Session, user=None, max_rounds: int = 5):
         """流式版 Agent：答案逐字往外吐（Day 10）
 
         Day 11 重构：和 answer() 一样收"含历史的完整消息列表"，
         多轮记忆由接口层组装，本方法专注"走循环、吐事件"。
+        Day 12 加 user：部门权限（同 answer()）。
 
         yield 的事件（SSE 帧，前端按 type 分发）：
             {"type": "token", "content": "..."}   模型吐的一段文字
@@ -89,7 +92,7 @@ class AgentService:
         tools_used: list[str] = []
 
         for _ in range(max_rounds):
-            stream = self.llm.complete_stream(messages, tools=TOOLS)
+            stream = self.llm.complete_stream(messages, tools=build_tools(user))
 
             text_parts: list[str] = []   # 本轮的纯文字（模型回答前可能先说一句"我来查"）
             tool_calls: list[dict] = []  # 累计出来的工具调用
@@ -150,7 +153,7 @@ class AgentService:
                     args = {}
                 tools_used.append(name)
                 yield {"type": "tool", "name": name}  # 让前端先亮起"正在调工具"的徽章
-                result = run_tool(name, args, db)
+                result = run_tool(name, args, db, user)  # user 带去部门权限
                 messages.append(
                     {
                         "role": "tool",

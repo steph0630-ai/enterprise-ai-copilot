@@ -1,7 +1,30 @@
 <script setup>
 // 组合式 API：<script setup> 里写的变量/函数，模板里直接用（Day 9）
 // Day 10：send() 改成流式接收 SSE，Agent 的答案一个字一个字蹦出来
+// Day 12：登录才能用——没 token 显示登录页，请求带 Authorization 头，401 回登录页
 import { ref, nextTick } from 'vue'
+import Login from './components/Login.vue'
+
+// 登录态（存 localStorage，刷新不丢）：
+// token 为空 = 未登录，显示登录页
+const token = ref(localStorage.getItem('token') || '')
+const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
+
+function onLogin(access_token, userInfo) {
+  token.value = access_token
+  user.value = userInfo
+  localStorage.setItem('token', access_token)
+  localStorage.setItem('user', JSON.stringify(userInfo))
+}
+
+function logout() {
+  token.value = ''
+  user.value = null
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+  messages.value = []
+  conversationId.value = ''
+}
 
 // 消息列表：{ role: 'user' | 'assistant', content, tools }
 const messages = ref([])
@@ -23,12 +46,19 @@ async function send() {
   scrollBottom()
 
   try {
-    // 2. 调流式接口（经 Vite 代理转发到后端 8000），带上会话 id 续上对话
+    // 2. 调流式接口（经 Vite 代理转发到后端 8000），带上 token + 会话 id
     const res = await fetch('/api/v1/agent/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token.value}`,  // Day 12：后端靠它认人
+      },
       body: JSON.stringify({ query: question, conversation_id: conversationId.value }),
     })
+    if (res.status === 401) {
+      logout()  // token 过期/无效 → 清掉登录态，回登录页
+      return
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     // 3. 逐块读流。fetch 的 body 是 ReadableStream，要用 reader 一帧帧取
@@ -95,10 +125,22 @@ function scrollBottom() {
 </script>
 
 <template>
-  <div class="app">
+  <!-- 未登录 → 登录页；已登录 → 聊天界面 -->
+  <Login v-if="!token" @login="onLogin" />
+
+  <div v-else class="app">
     <header class="header">
-      <h1>企业智能助手</h1>
-      <p class="subtitle">问知识、查数据——Agent 自动判断并调用工具</p>
+      <div>
+        <h1>企业智能助手</h1>
+        <p class="subtitle">问知识、查数据——Agent 自动判断并调用工具</p>
+      </div>
+      <div class="user-box">
+        <span class="user-name">{{ user?.username }}</span>
+        <el-tag size="small" :type="user?.role === 'admin' ? 'danger' : 'info'">
+          {{ user?.role === 'admin' ? '管理员' : user?.department || '员工' }}
+        </el-tag>
+        <el-button size="small" @click="logout">退出</el-button>
+      </div>
     </header>
 
     <main class="chat">
@@ -149,10 +191,24 @@ function scrollBottom() {
   padding: 20px 24px;
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
+  display: flex;              /* Day 12：左右分栏，左边标题右边用户 */
+  justify-content: space-between;
+  align-items: center;
 }
 
 .header h1 {
   font-size: 22px;
+  color: #1f2329;
+}
+
+.user-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-name {
+  font-size: 14px;
   color: #1f2329;
 }
 

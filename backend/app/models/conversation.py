@@ -20,6 +20,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(Integer, nullable=True, index=True)  # 谁的会话（Day 12；宽松可空以兼容旧测试数据）
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     messages = relationship(
