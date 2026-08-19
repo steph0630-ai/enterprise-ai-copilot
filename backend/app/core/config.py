@@ -37,5 +37,10 @@ class Settings(BaseSettings):
     # 200MB 字节。nginx 的 client_max_body_size 必须 >= 这个值，否则文件在网关层就被拒
     MAX_DOC_SIZE: int = 200 * 1024 * 1024
 
+    # Day 20：支持的文档扩展名（小写、含点）。
+    # 单一来源：上传接口 fail-fast 校验 + parse_document 兜底 共用，扩格式只改这一处。
+    # 注意与前端 el-upload 的 accept 属性保持一致。
+    SUPPORTED_EXTENSIONS: set[str] = {".pdf", ".docx", ".txt", ".md"}
+
 
 settings = Settings()

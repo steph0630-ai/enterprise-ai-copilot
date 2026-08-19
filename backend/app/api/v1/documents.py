@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_admin, get_db
+from app.core.config import settings
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.user import User
@@ -36,15 +37,30 @@ async def upload_document(
 
     返回：{"filename": "xxx.pdf", "document_id": 3, "status": "uploading"}
     """
+    # Day 20：fail-fast 白名单校验。非支持格式【不写盘】直接 400，
+    # 修复"不支持的格式传上去秒回成功、后台才翻车"的体验问题。
+    # safe_name 全程贯通（写盘/DB/后台任务）：sanitize 剥掉路径成分防穿越，
+    # 读文件（_ingest 里 STORAGE_DIR / filename）与写文件落在同一路径，两端闭合。
+    safe_name = document_service.sanitize_filename(file.filename or "")
+    ext = document_service.get_extension(file.filename)
+    if ext not in settings.SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"不支持的文件类型：{ext or '（无扩展名）'}，"
+                f"仅支持 {' / '.join(sorted(settings.SUPPORTED_EXTENSIONS))}"
+            ),
+        )
+
     # 1. 流式写盘 + 体积校验（超 200MB 中途就 413，不会把大文件读进内存）
     file.file.seek(0)  # 确保从文件开头读（多部分解析可能移动了指针）
-    file_path = document_service.save_uploaded_file(file.file, file.filename)
+    file_path = document_service.save_uploaded_file(file.file, safe_name)
 
     # 2. 写数据库记录（status="uploading"，等待后台任务接管）
     #    knowledge_base_id 先写死为 1（等知识库接口做好再改）
     doc = document_service.create_document_record(
         db=db,
-        filename=file.filename,
+        filename=safe_name,
         file_path=file_path,
         knowledge_base_id=1,
         status="uploading",
@@ -52,7 +68,7 @@ async def upload_document(
 
     # 3. 排队后台入库（响应返回后才执行）
     background_tasks.add_task(
-        document_service.ingest_document_job, doc.id, file.filename
+        document_service.ingest_document_job, doc.id, safe_name
     )
 
     return {

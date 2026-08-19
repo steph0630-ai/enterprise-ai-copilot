@@ -1,9 +1,14 @@
-"""文档服务：处理文件上传的业务逻辑（保存文件 + 写数据库 + 解析 PDF + 切分 + 异步入库）
+"""文档服务：处理文件上传的业务逻辑（保存文件 + 写数据库 + 多格式解析 + 切分 + 异步入库）
 
 Day 18 大改造：从"上传时同步入库"变成"上传秒回，后台线程慢慢入库"。
 - 大文件（几十 MB 到 200MB）不再把上传请求挂死：请求只负责收文件、建记录，
   真正的解析/向量化挪到 ingest_document_job（FastAPI BackgroundTasks 后台跑）。
 - 保存改成流式写盘：边写边数大小，超限即中止，不整文件读进内存。
+
+Day 20 多格式：解析从"只认 PDF"升级成"按扩展名分发的解析层"——
+parse_document 把 .pdf/.docx/.txt/.md 分发给对应解析器，全部返回 list[str]，
+对下游 split_text 完全透明。加格式 = 写一个解析函数 + 分发表加一行。
+顺手修：路径穿越（sanitize_filename）、空文档显式失败（不再静默 processed+0 chunk）。
 """
 
 import os
@@ -13,6 +18,15 @@ from pathlib import Path
 from fastapi import HTTPException
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import pdfplumber
+# Day 20：python-docx 解析 .docx。
+# 关键坑：docx.Document 是【工厂函数】不是类——打开文件用它（返回 DocumentPart.document 实例），
+# 但 isinstance 判断必须用真正的类 docx.document.Document，两者是同一个名字、不同类型。
+# （Document 名字已被下面的业务模型占用，所以真正的类起别名 DocxDocumentType。）
+import docx
+from docx.document import Document as DocxDocumentType
+from docx.oxml.ns import qn
+from docx.table import Table as DocxTable
+from docx.text.paragraph import Paragraph as DocxParagraph
 from sqlalchemy.orm import Session
 
 from app.ai.embedding import embedding_service
@@ -32,6 +46,28 @@ STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "files"
 _ingest_lock = threading.Lock()
 
 
+def sanitize_filename(filename: str | None) -> str:
+    """剥掉路径成分，防路径穿越：'..\\..\\x.pdf' / '../../x.pdf' -> 'x.pdf'
+
+    必须先把反斜杠统一成斜杠再交给 Path：Linux 容器里 Path 不把 '\\' 当分隔符，
+    直接 Path('..\\..\\x.pdf').name 会原样返回整串，穿越就堵不住了。
+    Path(...).name 只留最后一段，'../' 全部失效。
+    """
+    if not filename:
+        return ""
+    return Path(filename.replace("\\", "/")).name
+
+
+def get_extension(filename: str | None) -> str:
+    """返回规范化后的小写扩展名（含点）；空名/无扩展名返回 ''
+
+    例：'A.PDF' -> '.pdf'，'report.txt' -> '.txt'，'README' -> ''
+    """
+    if not filename:
+        return ""
+    return Path(filename.strip().replace("\\", "/")).suffix.lower()
+
+
 def save_uploaded_file(src, filename: str, max_size: int | None = None) -> str:
     """把上传的文件流写到磁盘，返回文件路径（相对 backend 根目录）
 
@@ -48,8 +84,14 @@ def save_uploaded_file(src, filename: str, max_size: int | None = None) -> str:
 
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Day 20 修路径穿越：原实现直接 STORAGE_DIR / filename，filename 含 '../'
+    # 可把文件写到 storage 目录之外。现在剥掉路径成分，只留文件名。
+    safe_name = sanitize_filename(filename)
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="文件名无效")
+
     # 拼出完整路径，然后分块拷贝
-    file_path = STORAGE_DIR / filename
+    file_path = STORAGE_DIR / safe_name
     written = 0
     with open(file_path, "wb") as out:
         while True:
@@ -115,6 +157,115 @@ def parse_pdf(file_path: str) -> list[str]:
         return [page.extract_text() or "" for page in pdf.pages]
 
 
+def parse_txt(file_path: str) -> list[str]:
+    """解析 .txt / .md：整篇文本作为一"页"返回（对 split_text 透明）
+
+    编码坑：企业 Windows 上传的 txt 常是 GBK，而 Docker 容器默认 UTF-8，
+    直接按 UTF-8 读会 UnicodeDecodeError 崩掉。策略是"读字节一次、逐级试解码"：
+      - utf-8-sig：等于 utf-8 + 自动剥 BOM，省一个编码位
+      - gbk：救 Windows 老文件（GBK 是 GB2312 超集，中文系统通用）
+      - latin-1：永不抛错（256 种字节全映射成字符），保证坏编码也能读出不崩
+    只读一次磁盘（open+read），而不是每个编码各 open 一次——大文件读 2~3 遍太浪费。
+    """
+    with open(file_path, "rb") as f:
+        raw = f.read()
+
+    for encoding in ("utf-8-sig", "gbk", "latin-1"):
+        try:
+            return [raw.decode(encoding)]
+        except UnicodeDecodeError:
+            continue
+
+    # 理论到不了：latin-1 永远不会抛 UnicodeDecodeError
+    raise ValueError("无法解码文本文件（不支持的编码）")
+
+
+def _iter_block_items(parent):
+    """按文档 body 顺序产出段落和表格；parent 是文档对象或单元格
+
+    为什么不用 doc.paragraphs / doc.tables：它们只给"顶层段落"和"顶层表格"，
+    两者都丢掉了"段落在表格前还是后"的顺序。制度类文档常是"条款段落 + 中间
+    嵌一张表"，按顺序抽出来接成一段，chunk 语义才连贯。
+    """
+    parent_elm = parent.element.body if isinstance(parent, DocxDocumentType) else parent._tc
+    for child in parent_elm.iterchildren():
+        if child.tag == qn("w:p"):
+            yield DocxParagraph(child, parent)
+        elif child.tag == qn("w:tbl"):
+            yield DocxTable(child, parent)
+
+
+def _cell_text(cell) -> str:
+    """单元格文本：段落 + 嵌套表格都要（制度类文档常有嵌套表）"""
+    parts = [p.text for p in cell.paragraphs if p.text.strip()]
+    for t in cell.tables:
+        parts.append(_table_text(t))
+    return "\n".join(parts)
+
+
+def _table_text(table) -> str:
+    """表格 → 每行一字符串，单元格用 ' | ' 分隔，行间用换行"""
+    lines = []
+    for row in table.rows:
+        lines.append(" | ".join(_cell_text(c).replace("\n", " ") for c in row.cells))
+    return "\n".join(lines)
+
+
+def parse_docx(file_path: str) -> list[str]:
+    """解析 .docx：正文段落 + 表格按文档顺序抽，整篇作为一"页"返回
+
+    表头/页脚明确跳过：它们每页重复（页码/公司名/文档标题），混进 chunk 是纯噪声。
+    损坏文件（或伪装成 .docx 的假文件）python-docx 会抛 BadZipFile 之类，
+    包一层转成带中文说明的 ValueError，让 error_message 是"看得懂的话"。
+    """
+    try:
+        document = docx.Document(file_path)  # 工厂函数打开文件，返回 Document 实例
+    except Exception as e:
+        raise ValueError(f"无法解析 Word 文档（文件可能损坏或不是真正的 .docx）：{e}")
+
+    blocks: list[str] = []
+    for block in _iter_block_items(document):
+        if isinstance(block, DocxParagraph):
+            text = block.text.strip()
+            if text:
+                blocks.append(text)
+        elif isinstance(block, DocxTable):
+            text = _table_text(block).strip()
+            if text:
+                blocks.append(text)
+
+    return ["\n\n".join(blocks)]
+
+
+# 扩展名 → 解析器（Day 20 分发表）。
+# 注意：必须用 lambda 包一层，让 parse_pdf/parse_docx/parse_txt 在【调用时】从模块
+# 全局查。直接存函数引用 {'.pdf': parse_pdf} 会把原函数对象拷进 dict，
+# pytest 的 monkeypatch.setattr(document_service, 'parse_pdf', ...) 就失效了。
+_PARSERS = {
+    ".pdf": lambda fp: parse_pdf(fp),
+    ".docx": lambda fp: parse_docx(fp),
+    ".txt": lambda fp: parse_txt(fp),
+    ".md": lambda fp: parse_txt(fp),  # MVP 里 md 就是纯文本，直接复用
+}
+
+
+def parse_document(filename: str, file_path: str) -> list[str]:
+    """按扩展名分发到具体解析器，返回 list[str]（对 split_text 透明）
+
+    get_extension 已做小写化，所以 .PDF / .Docx 天然命中。未知扩展名抛 ValueError，
+    正常流程到不了（上传已 fail-fast），纯属防御兜底——会被 ingest_document_job
+    捕获 → 状态变 failed，error_message 就是这句提示。
+    """
+    ext = get_extension(filename)
+    parser = _PARSERS.get(ext)
+    if parser is None:
+        raise ValueError(
+            f"不支持的文件类型：{ext or '（无扩展名）'}，"
+            f"仅支持 {' / '.join(sorted(settings.SUPPORTED_EXTENSIONS))}"
+        )
+    return parser(file_path)
+
+
 def split_text(pages_text: list[str], chunk_size: int = 500, chunk_overlap: int = 50) -> list[str]:
     """把多页文本切成 chunk
 
@@ -151,14 +302,20 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
 
     返回：切出来的 chunk 数量
     """
-    # 1. 解析 PDF（用绝对路径，不依赖运行时的工作目录）
+    # 1. 按扩展名解析（用绝对路径，不依赖运行时的工作目录）
     abs_path = STORAGE_DIR / filename
-    pages_text = parse_pdf(str(abs_path))
+    pages_text = parse_document(filename, str(abs_path))
+
+    # Day 20：空文档（扫描件伪装成 PDF / 空 txt / 空 docx）显式失败，
+    # 不静默"processed + 0 chunk"——用户看到 failed + 原因，才知道
+    # "传了个读不出字的文件"。（p or "" 防 None：pdfplumber 对扫描页返回 None）
+    if not pages_text or all(not (p or "").strip() for p in pages_text):
+        raise ValueError("没有可提取的文字，暂不支持 OCR/扫描件，请上传带文本层的文件")
 
     # 2. 切块
     chunks = split_text(pages_text)
 
-    # 空文档（如扫描件没有文本层）就跳过向量化
+    # 理论兜底（正常会被上面的空检查拦下）：极端情况下 split 出空列表
     if not chunks:
         return 0
 

@@ -76,6 +76,32 @@ def test_upload_too_large_413(client, user_factory, auth_token, monkeypatch):
     assert res.status_code == 413, res.text
 
 
+def test_upload_unsupported_extension_400(client, user_factory, auth_token, monkeypatch):
+    """非支持格式（如 .xlsx）→ 400 立即拒收，且【不写盘】（Day 20 fail-fast）
+
+    打桩 save_uploaded_file 为"被调用就抛错"：如果 fail-fast 拦在保存之前，
+    这个桩永远不该被触发。反过来，一旦有人把校验挪到保存之后，这里立刻红。
+    """
+    called = {"saved": False}
+
+    def fake_save(src, filename):
+        called["saved"] = True
+        raise AssertionError("不该走到写盘——fail-fast 应拦在保存前")
+
+    monkeypatch.setattr(document_service, "save_uploaded_file", fake_save)
+
+    user_factory("A100", role="admin")
+    token = auth_token("A100")
+    res = client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("data.xlsx", b"x", "application/vnd.ms-excel")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 400, res.text
+    assert "不支持" in res.json()["detail"]
+    assert called["saved"] is False
+
+
 # ========== 后台入库任务（ingest_document_job）==========
 
 def _setup_doc(db_session, status="uploading"):
@@ -132,6 +158,23 @@ def test_ingest_job_error_marks_failed(db_session, engine, monkeypatch):
     failed = db_session.get(Document, doc.id)
     assert failed.status == "failed"
     assert failed.error_message is not None and "embedding" in failed.error_message
+
+
+def test_ingest_job_empty_document_marks_failed(db_session, engine, monkeypatch):
+    """空文档（扫描件无文字层 / 空 txt）→ failed + 说明原因，不静默"processed 成功"
+
+    Day 20 修：以前解析出全空页 → 0 chunk → 却标 processed，用户以为入库了
+    其实一条向量都没有。现在显式 failed，error_message 告诉用户为什么。
+    """
+    doc = _setup_doc(db_session)
+    _patch_job_deps(monkeypatch, engine, [])  # parse_pdf 桩返回空页列表
+
+    document_service.ingest_document_job(doc.id, "empty.pdf")
+
+    db_session.expire_all()
+    failed = db_session.get(Document, doc.id)
+    assert failed.status == "failed"
+    assert failed.error_message is not None and "文字" in failed.error_message
 
 
 def test_delete_document_by_employee_forbidden(client, user_factory, auth_token, db_session):
