@@ -1,7 +1,9 @@
 alembic==1.19.1
 # RAG 链路（Day 17 补：本地 venv 有但没写进 requirements，Docker 从零装直接暴露）
 langchain-text-splitters==1.1.2
-pypdf==6.16.1
+# Day 18：pypdf 换 pdfplumber——pypdf 对 ToUnicode 损坏的中文 PDF 抽出乱码，
+# pdfplumber(pdfminer) 能重建编码救回文本
+pdfplumber==0.11.10
 chromadb==1.5.9
 openai==3.1.0
 fastapi==0.115.14

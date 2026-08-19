@@ -2,7 +2,7 @@
 // 管理后台（Day 14）：只有管理员能看到、能进
 // 两个 Tab：文档管理（上传/列表/删除）、用户管理（列表/改角色）
 // 所有请求都带 token（后端管理接口都要求 admin，否则 403）
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
@@ -26,14 +26,49 @@ const docs = ref([])
 // el-upload 的"把 token 带上"：headers 必须是一个对象
 const uploadHeaders = computed(() => authHeaders())
 
+// ===== 后台入库轮询（Day 18）=====
+// 上传是异步的：接口秒回，入库在后台跑。列表里只要还有"排队中/处理中"，
+// 就每 3 秒刷新一次，全到终态（已完成/失败）就停。
+let pollTimer = null
+
+function hasPending() {
+  return docs.value.some(d => d.status === 'uploading' || d.status === 'processing')
+}
+
 async function loadDocuments() {
   const res = await fetch('/api/v1/documents', { headers: authHeaders() })
-  if (res.ok) docs.value = await res.json()
+  if (res.ok) {
+    docs.value = await res.json()
+    if (hasPending()) startPolling()
+    else stopPolling()
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(loadDocuments, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 }
 
 function onUploadSuccess() {
-  ElMessage.success('上传成功，正在入库')
-  loadDocuments()
+  ElMessage.success('上传成功，后台入库中…')
+  loadDocuments() // 拉一次；还有没跑完的，loadDocuments 会自动接着轮询
+}
+
+// 状态 → 标签文案和颜色（Day 18：上传变异步后新增 排队/处理中/失败 三种）
+function statusInfo(status) {
+  return {
+    uploading: { label: '排队中', type: 'info' },
+    processing: { label: '处理中', type: 'warning' },
+    processed: { label: '已完成', type: 'success' },
+    failed: { label: '失败', type: 'danger' },
+  }[status] || { label: status || '未知', type: 'info' }
 }
 
 function onUploadError() {
@@ -88,6 +123,8 @@ onMounted(() => {
   loadDocuments()
   loadUsers()
 })
+
+onUnmounted(stopPolling) // 离开页面必须停掉轮询，不然定时器泄漏
 </script>
 
 <template>
@@ -106,17 +143,26 @@ onMounted(() => {
           >
             <el-button type="primary">上传 PDF 到知识库</el-button>
           </el-upload>
-          <span class="tip">上传即入库（解析 → 切分 → 向量化），员工就能在聊天里搜到</span>
+          <span class="tip">上传即入库（解析 → 切分 → 向量化），超大文件后台处理，支持最大 200MB</span>
         </div>
 
         <el-table :data="docs" stripe>
           <el-table-column prop="id" label="ID" width="60" />
           <el-table-column prop="filename" label="文件名" min-width="200" />
           <el-table-column prop="chunk_count" label="片段数" width="90" />
-          <el-table-column prop="status" label="状态" width="110">
+          <el-table-column label="状态" width="120">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.status === 'processed' ? 'success' : 'info'">
-                {{ row.status }}
+              <!-- 失败：悬停显示后台入库的报错原因 -->
+              <el-tooltip
+                v-if="row.status === 'failed'"
+                :content="row.error_message || '入库失败'"
+                placement="top"
+              >
+                <el-tag size="small" type="danger">失败</el-tag>
+              </el-tooltip>
+              <el-tag v-else size="small" :type="statusInfo(row.status).type">
+                <span v-if="row.status === 'processing'" class="spinner" />
+                {{ statusInfo(row.status).label }}
               </el-tag>
             </template>
           </el-table-column>
@@ -195,5 +241,24 @@ onMounted(() => {
   font-size: 12px;
   color: #86909c;
   margin-top: 12px;
+}
+
+/* 处理中的小转圈（纯 CSS，不引图标库） */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

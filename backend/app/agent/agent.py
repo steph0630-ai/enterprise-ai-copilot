@@ -90,6 +90,7 @@ class AgentService:
             {"type": "done",  "tools_used": [...]} 全部结束
         """
         tools_used: list[str] = []
+        yielded_token = False  # Day 18：整个流里有没有吐过一个字（空响应兜底用）
 
         for _ in range(max_rounds):
             stream = self.llm.complete_stream(messages, tools=build_tools(user))
@@ -106,6 +107,7 @@ class AgentService:
                 # 1. 模型吐了文字 → 原样转给前端
                 if delta.content:
                     text_parts.append(delta.content)
+                    yielded_token = True
                     yield {"type": "token", "content": delta.content}
 
                 # 2. 工具调用是"零散拼装"来的：同一个 index 是同一个调用，
@@ -133,6 +135,11 @@ class AgentService:
 
             # 4. 这一轮没要工具 → 就是最终答案，收工
             if not tool_calls:
+                # Day 18 防御：一个字没吐（上游偶发空流）→ 非流式兜底，别让前端看到空答案
+                if not yielded_token:
+                    fallback = self._fallback_answer(messages)
+                    if fallback:
+                        yield {"type": "token", "content": fallback}
                 yield {"type": "done", "tools_used": tools_used}
                 return
 
@@ -162,7 +169,26 @@ class AgentService:
                     }
                 )
 
+        # 达到最大轮次还没给答案，同样兜底一次
+        if not yielded_token:
+            fallback = self._fallback_answer(messages)
+            if fallback:
+                yield {"type": "token", "content": fallback}
         yield {"type": "done", "tools_used": tools_used}
+
+    def _fallback_answer(self, messages: list[dict]) -> str:
+        """空响应兜底（Day 18）：流式一个字都没吐时，非流式再问一次
+
+        上游（硅基流动/DeepSeek）偶发会返回空流：finish_reason=stop 但 content 为空。
+        这种时候别让用户看到"（Agent 没有返回内容）"，用最稳的非流式调用补救。
+        不带 tools——我们只要一句正常回答，不再让它调工具。
+        返回空字符串 = 兜底也失败，调用方保持原样。
+        """
+        try:
+            msg = self.llm.complete(messages)
+            return (msg.content or "").strip()
+        except Exception:
+            return ""
 
 
 # 模块级单例

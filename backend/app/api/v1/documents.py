@@ -2,9 +2,10 @@
 
 Day 14 安全修复：上传原本没有任何登录保护——任何人都能往知识库塞文档，
 这是"管理端"要做出来的由头。现在三个接口都戴 get_current_admin 帽子。
+Day 18 异步化：上传只负责"收文件 + 建记录 + 排队后台入库"，秒回。
 """
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -19,41 +20,45 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 @router.post("/upload")
 async def upload_document(
+    background_tasks: BackgroundTasks,  # Day 18：FastAPI 注入的后台任务队列
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能上传
 ):
-    """上传文档：保存文件到磁盘 + 写入 documents 表 + 向量化入库
+    """上传文档：流式落盘 + 建记录，然后排队后台入库，**立即返回**
 
-    返回：{"filename": "xxx.pdf", "status": "uploaded"}
+    为什么改成异步（Day 18）：
+    大文件入库 = 解析 + 切分 + 逐批调 embedding API，可能要几十秒到几分钟。
+    让上传请求一直挂着等它跑完，浏览器会超时。所以：
+    1. 这里只负责把文件存下来、在 documents 表建一条 status="uploading" 的记录；
+    2. 真正的入库（ingest_document_job）交给 FastAPI BackgroundTasks，
+       等响应返回之后在后台线程池里跑，状态会自己从 uploading → processed/failed。
+
+    返回：{"filename": "xxx.pdf", "document_id": 3, "status": "uploading"}
     """
-    # 1. 读文件的二进制内容
-    content = await file.read()
+    # 1. 流式写盘 + 体积校验（超 200MB 中途就 413，不会把大文件读进内存）
+    file.file.seek(0)  # 确保从文件开头读（多部分解析可能移动了指针）
+    file_path = document_service.save_uploaded_file(file.file, file.filename)
 
-    # 2. 保存到磁盘，拿到路径
-    file_path = document_service.save_uploaded_file(content, file.filename)
-
-    # 3. 写数据库记录（拿到 doc 对象，里面有数据库生成的自增 id）
+    # 2. 写数据库记录（status="uploading"，等待后台任务接管）
     #    knowledge_base_id 先写死为 1（等知识库接口做好再改）
     doc = document_service.create_document_record(
         db=db,
         filename=file.filename,
         file_path=file_path,
         knowledge_base_id=1,
+        status="uploading",
     )
 
-    # 4. 把文档变成可检索的向量（解析 → 切分 → 向量化 → 入库）
-    chunk_count = document_service.ingest_document(db, doc.id, file.filename)
-
-    # 5. 标记文档已处理完
-    doc.status = "processed"
-    db.commit()
+    # 3. 排队后台入库（响应返回后才执行）
+    background_tasks.add_task(
+        document_service.ingest_document_job, doc.id, file.filename
+    )
 
     return {
         "filename": file.filename,
         "document_id": doc.id,
-        "chunk_count": chunk_count,
-        "status": doc.status,
+        "status": "uploading",  # 不再是 "processed"——入库还在后台跑
     }
 
 
@@ -82,6 +87,7 @@ def list_documents(
             "status": d.status,
             "chunk_count": chunk_counts.get(d.id, 0),
             "created_time": str(d.created_time),
+            "error_message": d.error_message,  # Day 18：失败原因，前端 tooltip 显示
         }
         for d in docs
     ]

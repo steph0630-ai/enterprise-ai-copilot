@@ -116,7 +116,7 @@ function handleEvent(raw) {
     if (!last.tools.includes(event.name)) last.tools.push(event.name)  // 亮徽章
     scrollBottom()
   } else if (event.type === 'done') {
-    if (!last.content) last.content = '（Agent 没有返回内容）'
+    if (!last.content) last.content = '（Agent 没有返回内容，请重试）'
     if (event.tools_used && last.tools.length === 0) last.tools = event.tools_used
     scrollBottom()
   } else if (event.type === 'error') {

@@ -33,5 +33,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-ai/DeepSeek-V3"
     LLM_TEMPERATURE: float = 0.2
 
+    # 上传文件大小上限（Day 18：企业大文件支持）
+    # 200MB 字节。nginx 的 client_max_body_size 必须 >= 这个值，否则文件在网关层就被拒
+    MAX_DOC_SIZE: int = 200 * 1024 * 1024
+
 
 settings = Settings()

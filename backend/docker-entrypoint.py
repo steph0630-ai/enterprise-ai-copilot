@@ -1,17 +1,19 @@
-"""容器启动入口（Day 17）
+"""容器启动入口（Day 17 创建 / Day 18 修一个 stamp 坑）
 
 一个 python 脚本按顺序完成启动前的所有事：
-    等数据库就绪 → 建表 → alembic stamp → 种子数据 → 起 uvicorn
+    等数据库就绪 → 建表 → （全新库 stamp | 老库 upgrade）→ 种子数据 → 起 uvicorn
 
 为什么用 python 写入口而不是 shell 脚本？
 - Windows 上写的 .sh 容易带 CRLF 换行，进 Linux 容器会报 "command not found"；
 - python 脚本跨平台无这个坑。
 
-为什么 alembic stamp head 而不是 upgrade head？
-- 容器里是（或可能是）全新库，create_tables.py 已经建出"当前最新结构"的表；
-- 迁移 0001 是历史遗留的"从旧结构到新结构"，对新库没有意义（表已是新结构），
-  直接 stamp 标记"已应用"，让 alembic_version 对得上即可。
-- 这也是"在已有项目引入 Alembic"的收尾动作：老库 upgrade，新库 stamp。
+为什么全新库 stamp、老库 upgrade（Day 18 教训）？
+- 全新库：create_tables.py 已建出"当前最新结构"的表，迁移 0001/0002 是对旧结构的
+  历史改造，对新库没有意义 → 直接 stamp 标记"已应用"，让 alembic_version 对得上。
+- 老库：有 alembic_version 表 = 有迁移历史 → 必须 upgrade，把还没跑过的迁移补上。
+- 原来无条件 stamp 的坑：老库重建容器时，stamp 把新迁移"假标记"成已应用，
+  实际列没加（0002 的 error_message 就这么漏过，上传 500 Unknown column）。
+  这就是"在已有项目引入 Alembic"的收尾动作：老库 upgrade，新库 stamp。
 """
 
 import os
@@ -46,10 +48,36 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def is_fresh_db() -> bool:
+    """判断是全新库还是已有库：看 alembic_version 表在不在
+
+    全新库（或从未被迁移工具管过的老库）→ 没有这张表 → 用 stamp；
+    已有迁移历史的库 → 有这张表 → 用 upgrade。
+    """
+    engine = create_engine(settings.DATABASE_URL)
+    with engine.connect() as conn:
+        n = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = DATABASE() AND table_name = 'alembic_version'"
+            )
+        ).scalar()
+    return n == 0
+
+
 if __name__ == "__main__":
     wait_for_db()
-    run([sys.executable, "create_tables.py"])                    # 建表（幂等：只建不存在的）
-    run([sys.executable, "-m", "alembic", "stamp", "head"])     # 标记迁移已应用
+    run([sys.executable, "create_tables.py"])  # 建表（幂等：只建不存在的）
+
+    # Day 18 修的一个真坑：原来无条件 stamp head，老库会被"假标记"成已应用，
+    # 实际迁移没跑（0002 的 error_message 列就是这么漏掉的）。
+    # 现在区分：全新库 stamp（表已是当前结构，迁移只是历史标记）；
+    #           老库 upgrade（应用还没跑过的迁移，如 0002 加列）。
+    if is_fresh_db():
+        run([sys.executable, "-m", "alembic", "stamp", "head"])
+    else:
+        run([sys.executable, "-m", "alembic", "upgrade", "head"])
+
     run([sys.executable, "scripts/seed_users.py"])              # E001-003 演示账号
     run([sys.executable, "scripts/seed_orders.py"])             # 7 条订单（已存在则跳过）
 

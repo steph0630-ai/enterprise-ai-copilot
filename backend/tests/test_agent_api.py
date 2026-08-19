@@ -11,6 +11,34 @@ def test_agent_chat_requires_auth(client):
     assert res.status_code == 401
 
 
+def test_answer_stream_fallback_on_empty_stream(monkeypatch):
+    """流式一个 token 都没吐（上游偶发空响应）→ 用非流式兜底补一句（Day 18 防御）
+
+    背景：真实遇到过一次——用户问"Tools讲师是谁"，模型流 finish=stop 但 content 为空，
+    前端显示"（Agent 没有返回内容）"。修复：answer_stream 结束时如果没吐过任何 token，
+    非流式再问一次兜底。
+    """
+    from app.agent.agent import agent_service
+
+    class FakeMsg:
+        content = "兜底回答"
+        tool_calls = None
+
+    # 1) 流式返回空流（一个 chunk 都没有，模拟上游抽风）
+    monkeypatch.setattr(
+        agent_service.llm, "complete_stream", lambda messages, tools=None: iter([])
+    )
+    # 2) 非流式兜底正常返回
+    monkeypatch.setattr(
+        agent_service.llm, "complete", lambda messages, tools=None: FakeMsg()
+    )
+
+    events = list(agent_service.answer_stream([{"role": "user", "content": "你好"}], db=None))
+    tokens = [e["content"] for e in events if e["type"] == "token"]
+    assert tokens == ["兜底回答"]  # 空流也能兜出内容
+    assert events[-1]["type"] == "done"
+
+
 def test_agent_chat_works_with_token(client, user_factory, auth_token, monkeypatch):
     from app.api.v1 import agent as agent_api
 
