@@ -1,0 +1,8 @@
+# 开发/测试依赖（Day 16）：生产 requirements.txt + 测试相关
+# 安装：./venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+-r requirements.txt
+
+# pytest：测试框架
+pytest==9.1.1
+# httpx：FastAPI TestClient 底层要用它发请求（测试客户端依赖）
+httpx==0.28.1

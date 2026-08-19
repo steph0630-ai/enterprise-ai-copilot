@@ -1,11 +1,14 @@
 """向量库：把向量存进 Chroma，并支持"找最相似"的检索"""
 
+import os
 from pathlib import Path
 
 import chromadb
 
 # Chroma 数据落盘目录（和上传文件一样放 storage 下——是数据，不是代码）
-CHROMA_DIR = Path(__file__).resolve().parent.parent / "storage" / "chroma"
+# 支持环境变量覆盖：pytest 测试时把向量库指到临时目录，避免锁冲突/污染真实数据
+_default_chroma = Path(__file__).resolve().parent.parent / "storage" / "chroma"
+CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(_default_chroma)))
 
 
 class VectorStore:

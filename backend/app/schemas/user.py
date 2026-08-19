@@ -55,5 +55,5 @@ class UserOut(BaseModel):
     role: str
     department: str | None
 
-    class Config:
-        from_attributes = True  # 允许从 ORM 对象转换
+    # Pydantic V2 新写法（旧 class Config 已弃用）：允许从 ORM 对象转换
+    model_config = {"from_attributes": True}
