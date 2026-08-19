@@ -31,9 +31,9 @@ class AgentRequest(BaseModel):
 def _build_messages(
     req: AgentRequest, user: User, db: Session
 ) -> tuple[list[dict], Conversation]:
-    """拼出给 Agent 的完整消息列表（Day 11 多轮 + Day 12 用户身份）
+    """拼出给 Agent 的完整消息列表（Day 11 多轮 + Day 12 用户身份 + Day 19 防幻觉规则）
 
-    结构：system（你是谁/什么权限） + 历史（自己的会话） + 当前问题
+    结构：system（你是谁/什么权限/怎么干活） + 历史（自己的会话） + 当前问题
     返回 (messages, conv)：messages 喂给 Agent，conv 用来存这一轮的新问答。
     """
     # 会话按 user_id 隔离：拿别人的会话 id 来问只会开新会话
@@ -45,7 +45,23 @@ def _build_messages(
         "role": "system",
         "content": (
             f"你是企业智能助手。当前用户：{user.name}（工号 {user.employee_no}），"
-            f"角色：{user.role}，部门：{dept_desc}。"
+            f"角色：{user.role}，部门：{dept_desc}。\n"
+            # Day 19 修：原来 system 只有身份没有行为规则，模型会把"工具调用方式"
+            # 这类问题当成"关于系统自身的元问题"，凭自己的认知直接答、不查知识库。
+            # 教训：抽象规则（"知识类问题要查库"）压不过模型的强先验，必须配一个
+            # 具体示例（few-shot）才能真正掰过来——光讲道理不如举一个例子。
+            "工作规则：\n"
+            "1. 内容性问题（概念、原理、方法、教程、课程、制度、流程等）"
+            "一律先调用 search_knowledge 从企业知识库检索，再依据检索结果作答，"
+            "不得凭自己的知识或对工具的了解直接回答。\n"
+            "2. 只有用户明确询问\"你这个系统/你的工具/平台架构\"（如\"你们用什么技术栈\"）时，"
+            "才可以不检索、直接回答。\n"
+            "3. 调用工具后，严格依据工具返回的内容作答；结果里没有的信息，"
+            "明确说\"知识库中没有相关内容\"，不要编造、不要补充。\n"
+            "4. 数据类问题调用 query_data 查询数据库，同样以查询结果为准。\n"
+            "示例：用户问\"工具调用方式\"\"函数调用是什么\"\"Agent 怎么用工具\"，"
+            "指的是知识库文档里的内容，必须先调用 search_knowledge，"
+            "不能讲我们自己的 search_knowledge/query_data 工具本身。"
         ),
     }
     messages = [system] + history + [{"role": "user", "content": req.query}]
