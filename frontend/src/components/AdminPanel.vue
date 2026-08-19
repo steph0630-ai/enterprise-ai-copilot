@@ -143,7 +143,7 @@ onUnmounted(stopPolling) // 离开页面必须停掉轮询，不然定时器泄�
           >
             <el-button type="primary">上传文档到知识库</el-button>
           </el-upload>
-          <span class="tip">支持 PDF / Word / TXT / Markdown，上传即入库（解析 → 切分 → 向量化），超大文件后台处理，最大 200MB</span>
+          <span class="tip">支持 PDF / Word / TXT / Markdown，文档内图表自动识别入库，超大文件后台处理，最大 200MB</span>
         </div>
 
         <el-table :data="docs" stripe>

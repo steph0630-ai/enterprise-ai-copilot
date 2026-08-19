@@ -11,6 +11,7 @@ parse_document 把 .pdf/.docx/.txt/.md 分发给对应解析器，全部返回 l
 顺手修：路径穿越（sanitize_filename）、空文档显式失败（不再静默 processed+0 chunk）。
 """
 
+import io
 import os
 import threading
 from pathlib import Path
@@ -30,6 +31,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from sqlalchemy.orm import Session
 
 from app.ai.embedding import embedding_service
+from app.ai.vision_service import vision_service
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.models.document import Document
@@ -237,6 +239,104 @@ def parse_docx(file_path: str) -> list[str]:
     return ["\n\n".join(blocks)]
 
 
+# ========== 图片理解（Day 21：混图文档的"看图说话"） ==========
+# 图片理解是【增强层】不是【必要层】：图 → 多模态模型 → 文字描述 → 拼回文本流，
+# 下游 split_text/embedding 完全透明。任何一张图失败都静默跳过，不拖垮整个文档入库。
+# 小图（logo/装饰图标）跳过——它们宽或高 < MIN_IMAGE_SIZE，是噪声不是内容。
+MIN_IMAGE_SIZE = 100
+
+
+def extract_pdf_images(file_path) -> list[tuple[int, bytes, str]]:
+    """从 PDF 抠出值得描述的图片，返回 [(页索引, PNG 字节, mime), ...]
+
+    为什么不用 PyMuPDF：它是 PDF 抠图的标准工具，但它是 AGPL 授权——企业项目
+    不开源就有合规隐患。pdfplumber 自带渲染能力：page.images 给出每张图的 bbox，
+    page.crop(bbox).to_image() 把该区域渲染成位图，够 VL 模型看，还少一个重依赖。
+    """
+    images: list[tuple[int, bytes, str]] = []
+    with pdfplumber.open(file_path) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            for img in page.images:
+                # srcsize 是 (宽, 高) 像素；缺失时放行（宁可多看，别漏内容）
+                srcsize = img.get("srcsize")
+                w, h = srcsize or (0, 0)
+                if w and h and (w < MIN_IMAGE_SIZE or h < MIN_IMAGE_SIZE):
+                    continue  # 小图：logo/装饰图标，跳过
+                bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
+                rendered = page.crop(bbox).to_image(resolution=150).original
+                buf = io.BytesIO()
+                rendered.save(buf, format="PNG")
+                images.append((page_idx, buf.getvalue(), "image/png"))
+    return images
+
+
+def extract_docx_images(file_path) -> list[tuple[int, bytes, str]]:
+    """从 .docx 抠出值得描述的图片，返回 [(块索引, 图片字节, mime), ...]
+
+    python-docx 没有"图片列表"这个 API，图藏在 XML 的 a:blip 里：
+      - document.element.body.iter(qn('a:blip'))：遍历所有图片引用
+      - blip.get(qn('r:embed'))：拿到 relationship id（rIdN）
+      - document.part.related_parts[rid]：取到 ImagePart（.blob 字节 / .content_type mime）
+    part.image.px_width/px_height 是真实像素尺寸，用来过滤小图。
+
+    parse_docx 把整篇合并成一页返回，所以这里块索引统一记 0（描述拼到那页末尾）。
+    """
+    images: list[tuple[int, bytes, str]] = []
+    document = docx.Document(file_path)
+    for blip in document.element.body.iter(qn("a:blip")):
+        rid = blip.get(qn("r:embed"))
+        if not rid:
+            continue  # 有 blip 没 embed（外链图），跳过
+        try:
+            part = document.part.related_parts[rid]
+        except KeyError:
+            continue  # relationship 引用悬空（损坏文档），跳过不崩
+        if part.image.px_width < MIN_IMAGE_SIZE or part.image.px_height < MIN_IMAGE_SIZE:
+            continue  # 小图跳过
+        images.append((0, part.blob, part.content_type))
+    return images
+
+
+def enrich_pages_with_images(filename: str, pages_text: list[str]) -> list[str]:
+    """图片理解增强层：文档里的图 → 多模态模型描述 → 拼回对应页文本末尾
+
+    快速路径（txt/md 没有内嵌图）直接原样返回，零开销。失败降级：任何一张图
+    （VL 挂/超时/图片损坏）静默跳过，文档照常入库——图片理解是锦上添花，
+    不该因为看图失败就让整个文档 failed。这和 Day 20 空文档显式失败不冲突：
+    那是核心能力（没字可抽 = 文档没用）必须报，这是可降级能力，降级后仍可用。
+
+    数量风控：最多处理 settings.VISION_MAX_IMAGES 张，防一张 100 图的 PPT
+    批量上传打爆 API 账单。
+    """
+    if not pages_text:
+        return pages_text
+
+    # 快速路径：只有 pdf/docx 有内嵌图，其余原样返回
+    ext = get_extension(filename)
+    if ext == ".pdf":
+        images = extract_pdf_images(STORAGE_DIR / filename)
+    elif ext == ".docx":
+        images = extract_docx_images(STORAGE_DIR / filename)
+    else:
+        return pages_text
+
+    if not images:
+        return pages_text
+
+    for pos, image_bytes, mime in images[: settings.VISION_MAX_IMAGES]:
+        try:
+            desc = vision_service.describe_image(image_bytes, mime)
+        except Exception:
+            continue  # 单张图失败跳过，不拖垮整单
+        if not desc:
+            continue
+        # PDF：拼到对应页；docx：全拼到唯一那页（pages_text[0]）
+        target = pos if 0 <= pos < len(pages_text) else 0
+        pages_text[target] = f"{pages_text[target]}\n\n[图：{desc}]"
+
+    return pages_text
+
+
 # 扩展名 → 解析器（Day 20 分发表）。
 # 注意：必须用 lambda 包一层，让 parse_pdf/parse_docx/parse_txt 在【调用时】从模块
 # 全局查。直接存函数引用 {'.pdf': parse_pdf} 会把原函数对象拷进 dict，
@@ -305,6 +405,10 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
     # 1. 按扩展名解析（用绝对路径，不依赖运行时的工作目录）
     abs_path = STORAGE_DIR / filename
     pages_text = parse_document(filename, str(abs_path))
+
+    # Day 21：图片理解增强层——把文档里的图翻译成文字描述拼回文本流。
+    # 失败自动降级（单图跳过），不影响下面继续入库。
+    pages_text = enrich_pages_with_images(filename, pages_text)
 
     # Day 20：空文档（扫描件伪装成 PDF / 空 txt / 空 docx）显式失败，
     # 不静默"processed + 0 chunk"——用户看到 failed + 原因，才知道

@@ -120,6 +120,10 @@ def _patch_job_deps(monkeypatch, engine, chunks, fail=False):
     monkeypatch.setattr(document_service, "SessionLocal", factory)
     # 2) 假 PDF 解析：返回固定文本
     monkeypatch.setattr(document_service, "parse_pdf", lambda path: chunks)
+    # 2.2) Day 21 图片理解：job 测试只关心状态机，不测图片——声明"文档无图"，
+    #      enrich 走快速路径返回原文本，不碰真实文件/不调 VL API
+    monkeypatch.setattr(document_service, "extract_pdf_images", lambda path: [])
+    monkeypatch.setattr(document_service, "extract_docx_images", lambda path: [])
     # 2.5) 假切分：原样返回（不然太短的假文本会被并成一个 chunk，数量不好断言）
     monkeypatch.setattr(document_service, "split_text", lambda pages: pages)
     # 3) 假 embedding：每条文本一个 4 维假向量，或直接抛错模拟失败

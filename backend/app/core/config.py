@@ -42,5 +42,21 @@ class Settings(BaseSettings):
     # 注意与前端 el-upload 的 accept 属性保持一致。
     SUPPORTED_EXTENSIONS: set[str] = {".pdf", ".docx", ".txt", ".md"}
 
+    # Day 21：图片理解（混图文档的"看图说话"）。
+    # 视觉模型走【智谱 BigModel】（2026-08-19 换平台）：
+    # 硅基流动账号已无可用视觉模型——Qwen2.5-VL-72B/GLM-4.1V 全 403 Model disabled、
+    # Qwen3-Omni/Qwen2.5-VL-7B 下架 400，唯一能跑的 DeepSeek-OCR 只能抠字、理解不了
+    # 流程图/图表语义。用户拍板：换智谱拿真正的视觉模型 glm-4v-flash（免费、OpenAI 兼容、
+    # 图片传 base64 data URI，和硅基流动的 vision 写法完全一样）。
+    #
+    # 注意：key 是【智谱独立账号】，不是硅基流动的 LLM_API_KEY（硅基流动不认识智谱 key）。
+    # 需要去 open.bigmodel.cn 注册 → 实名认证 → API 密钥页创建，填进 backend/.env 的
+    # VISION_API_KEY（真实值放 .env，不进 git）。
+    VISION_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+    VISION_MODEL: str = "glm-4v-flash"
+    VISION_API_KEY: str = ""  # 智谱 key，放 .env
+    # 每文档最多让模型看几张图：防 100 张图的 PPT 批量上传打爆 API 账单，超出的跳过
+    VISION_MAX_IMAGES: int = 20
+
 
 settings = Settings()
