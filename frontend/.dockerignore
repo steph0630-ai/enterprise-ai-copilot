@@ -1,0 +1,3 @@
+# 构建上下文黑名单
+node_modules/
+dist/

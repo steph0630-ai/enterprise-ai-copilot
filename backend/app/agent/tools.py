@@ -11,6 +11,7 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.api.deps import ADMIN_ROLES  # 管理端角色集合（单一来源，别再漏放行）
 from app.services.rag_service import rag_service
 
 
@@ -68,7 +69,9 @@ def build_tools(user=None) -> list[dict]:
     就得在说明书写清楚当前用户属于哪个部门、SQL 必须带上部门条件。
     """
     tools = copy.deepcopy(TOOLS)  # 每次复制一份，别污染全局的 TOOLS
-    if user and user.role != "admin" and user.department:
+    # 管理端（admin / super_admin）不受部门限制，不写权限描述
+    # （Day 17 修：原来只认 admin，super_admin 被当成普通员工）
+    if user and user.role not in ADMIN_ROLES and user.department:
         for t in tools:
             if t["function"]["name"] == "query_data":
                 t["function"]["description"] += (
@@ -117,9 +120,10 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
     if ";" in body:
         return {"error": "只允许单条 SQL 语句"}
 
-    # 部门权限：非管理员必须查自己部门。生产上用只读账号 + 数据库视图/RLS，
+    # 部门权限：非管理端必须查自己部门。生产上用只读账号 + 数据库视图/RLS，
     # 这里用"SQL 里必须有本部门字样"做第 4 道防线，简单且能演示错误自愈。
-    if user and user.role != "admin":
+    # Day 17 修：管理端（admin/super_admin）跳过，否则 E001 会被告知"只能查部门(None)"
+    if user and user.role not in ADMIN_ROLES:
         if not (user.department and user.department in body):
             return {
                 "error": (

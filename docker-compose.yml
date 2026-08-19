@@ -1,33 +1,61 @@
-# 一键启动：mysql + fastapi 两个服务
-# 用法：docker compose up -d
+# Day 17：Docker Compose 一键起整个系统（mysql + 后端 + 前端）
+# 用法（项目根目录）：
+#   1. 先停掉本机跑的 uvicorn（占着 8000 端口）
+#   2. docker compose up --build
+#   3. 浏览器开 http://localhost:8080，E001 / admin123 登录
+# mysql 沿用你现有的 3307 库和数据（知识库/订单都在），演示直接有内容
+
 services:
+  # ============ 数据库 ============
   mysql:
-    image: mysql:8
+    # 用 8.4：数据是旧容器（mysql:8 标签 = 8.4 LTS）写的 8.4.11，
+    # 8.0 读不了新版本数据（Invalid downgrade），必须同系列
+    image: mysql:8.4
     container_name: copilot-mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: copilot
+      TZ: Asia/Shanghai
     ports:
-      - "3307:3306"        # 宿主机 3307 → 容器内 3306（绕开本机 3306）
+      - "3307:3306"        # 沿用原配置，本机 3307
     volumes:
       - mysql_data:/var/lib/mysql   # 数据持久化，容器删了数据还在
     healthcheck:
+      # 后端等它"健康"才启动，否则一启动就连不上库
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 30
 
-  fastapi:
+  # ============ 后端 ============
+  backend:
     build: ./backend
-    container_name: copilot-fastapi
+    container_name: copilot-backend
+    env_file:
+      - ./backend/.env        # 硅基流动 key（.env 不进仓库，运行时注入，不烤进镜像）
     environment:
-      # 容器内部用服务名 mysql 访问数据库
+      # 容器里连数据库走"服务名 mysql"，environment 优先级高于 env_file，
+      # 覆盖 .env 里 127.0.0.1:3307 的本机写法
       DATABASE_URL: mysql+pymysql://root:root@mysql:3306/copilot
-    ports:
-      - "8000:8000"
     depends_on:
       mysql:
-        condition: service_healthy   # 等 MySQL 健康了再启动后端
+        condition: service_healthy   # 等 MySQL 健康检查通过再启动
+    volumes:
+      # 复用本机知识库数据（Chroma 向量库 + 上传的 PDF），演示有内容可查
+      - ./backend/app/storage:/app/app/storage
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # ============ 前端 ============
+  frontend:
+    build: ./frontend
+    container_name: copilot-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"   # 浏览器访问 http://localhost:8080
+    restart: unless-stopped
 
 volumes:
   mysql_data:

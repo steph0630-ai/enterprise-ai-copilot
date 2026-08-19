@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agent.agent import agent_service
-from app.api.deps import get_current_user, get_db
+from app.api.deps import ADMIN_ROLES, get_current_user, get_db
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.services.conversation_service import conversation_service
@@ -39,11 +39,13 @@ def _build_messages(
     # 会话按 user_id 隔离：拿别人的会话 id 来问只会开新会话
     conv = conversation_service.get_or_create(req.conversation_id, user.id, db)
     history = conversation_service.history(conv, db)
+    # 管理端显示"全部部门"，普通用户没分部门才显示"未分配"（Day 17 顺手修）
+    dept_desc = user.department or ("全部部门" if user.role in ADMIN_ROLES else "未分配")
     system = {
         "role": "system",
         "content": (
             f"你是企业智能助手。当前用户：{user.name}（工号 {user.employee_no}），"
-            f"角色：{user.role}，部门：{user.department or '未分配'}。"
+            f"角色：{user.role}，部门：{dept_desc}。"
         ),
     }
     messages = [system] + history + [{"role": "user", "content": req.query}]

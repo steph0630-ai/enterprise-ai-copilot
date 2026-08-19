@@ -1,0 +1,9 @@
+# 构建上下文黑名单（不送进镜像，不送进构建环境）
+venv/
+__pycache__/
+*.pyc
+.env
+storage/
+tests/
+requirements-dev.txt
+test_company_policy.pdf
