@@ -107,6 +107,15 @@ def test_parse_docx_table(tmp_path):
     assert " | " in out[0]  # 单元格用竖线分隔
 
 
+def test_parse_docx_table_markdown_headers(tmp_path):
+    """docx 表格也转 Markdown：列头保留 + 表头分隔行（多列表格列语义不丢）"""
+    p = _make_docx(tmp_path / "t.docx", table=[["部门", "人数"], ["销售一部", "20"]])
+    out = document_service.parse_docx(str(p))[0]
+    assert "| 部门 | 人数 |" in out  # 表头行还在
+    assert "| --- | --- |" in out   # Markdown 分隔行（区别于打平文本的标志）
+    assert "| 销售一部 | 20 |" in out
+
+
 def test_parse_docx_paragraph_table_order(tmp_path):
     """段落-表格-段落的顺序被保留（doc.paragraphs/doc.tables 会丢顺序）
 
@@ -131,6 +140,128 @@ def test_parse_docx_corrupt_raises(tmp_path):
     p.write_bytes(b"this is not a docx")
     with pytest.raises(ValueError, match="无法解析 Word 文档"):
         document_service.parse_docx(str(p))
+
+
+# ========== Day 25.3：PDF 表格结构化（列头↔数据不丢失） ==========
+
+def test_table_to_markdown_keeps_column_headers():
+    """表格 → Markdown：第一行当表头，列头↔数据对应关系保留（列语义不丢）"""
+    tbl = [
+        ["项目", "递延所得税负债"],
+        ["公允价值变动", "64,801.27"],
+        ["合计", "1,417,003.17"],
+    ]
+    md = document_service._table_to_markdown(tbl)
+    assert md.startswith("| 项目 | 递延所得税负债 |")
+    assert "| --- | --- |" in md
+    assert "| 公允价值变动 | 64,801.27 |" in md
+    assert "| 合计 | 1,417,003.17 |" in md
+
+
+def test_table_to_markdown_empty_cell():
+    """空单元格 → 空串，位置占住（多列表格的行长短不一不串列）"""
+    md = document_service._table_to_markdown(
+        [["项目", "期末", "期初"], ["定期存款利息", "122,561.10", ""]]
+    )
+    assert "| 定期存款利息 | 122,561.10 |  |" in md
+
+
+def test_table_to_markdown_merges_two_header_rows():
+    """两行表头（跨列合并）合并成一行：列名"期末余额 递延所得税负债"↔数据列对得上"""
+    tbl = [
+        ["项目", "期末余额", None, "期初余额", None],
+        [None, "应纳税暂时性差异", "递延所得税负债", "应纳税暂时性差异", "递延所得税负债"],
+        ["公允价值变动", "432,008.53", "64,801.27", "21,722.22", "3,258.33"],
+        ["合计", "8,086,021.74", "1,417,003.17", "7,526,074.00", "1,346,216.88"],
+    ]
+    md = document_service._table_to_markdown(tbl)
+    assert "| 项目 | 期末余额 应纳税暂时性差异 | 期末余额 递延所得税负债 |" in md
+    assert "| 合计 | 8,086,021.74 | 1,417,003.17 |" in md
+
+
+def test_parse_pdf_page_with_table_emits_markdown(monkeypatch):
+    """含表格页：输出附加 Markdown 表格（列头在，模型能读列）"""
+    class FakePage:
+        def extract_text(self):
+            return "未抵销的递延所得税负债\n项目 递延所得税负债 合计"
+
+        def extract_tables(self):
+            return [[["项目", "递延所得税负债"], ["合计", "1417003.17"]]]
+
+    class FakePDF:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(document_service.pdfplumber, "open", lambda path: FakePDF())
+
+    out = document_service.parse_pdf("/no/such.pdf")
+    assert "[表格]" in out[0]
+    assert "| 项目 | 递延所得税负债 |" in out[0]
+    assert "1417003.17" in out[0]
+
+
+def test_parse_pdf_page_without_table_plain_text(monkeypatch):
+    """无表格页：原样 extract_text，不加 [表格] 标记（大部分页面保持原样）"""
+    class FakePage:
+        def extract_text(self):
+            return "第一段正文"
+
+        def extract_tables(self):
+            return []
+
+    class FakePDF:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(document_service.pdfplumber, "open", lambda path: FakePDF())
+
+    out = document_service.parse_pdf("/no/such.pdf")
+    assert out == ["第一段正文"]
+    assert "[表格]" not in out[0]
+
+
+# ========== Day 25.3：页眉页脚剥离 ==========
+
+def test_strip_repeated_header_footer():
+    """跨页重复的页眉行被剥（公司名/文档标题每页都出现），正文保留，页码正则剥"""
+    pages = [
+        "XX公司机密\n正文A\n第 1 页",
+        "XX公司机密\n正文B\n第 2 页",
+        "XX公司机密\n正文C\n第 3 页",
+    ]
+    out = document_service._strip_headers_footers(pages)
+    assert out == ["正文A", "正文B", "正文C"]
+
+
+def test_strip_page_number_slash():
+    """页码 '1/155' 格式（每页变化，重复检测抓不到）靠页码正则剥掉"""
+    pages = [f"正文{i}\n{i + 1}/155" for i in range(3)]
+    out = document_service._strip_headers_footers(pages)
+    assert all("155" not in p for p in out)  # 页码行被剥
+    assert all("正文" in p for p in out)
+
+
+def test_strip_keeps_short_documents():
+    """少于 3 页不动（单页没有"重复"意义，别误伤）"""
+    pages = ["唯一内容\n重复行\n重复行"]
+    assert document_service._strip_headers_footers(pages) == pages
+
+
+def test_strip_does_not_remove_body_numbers():
+    """表格打平的纯数字行（金额）跨页重复也不被误删——保守策略"""
+    pages = ["项目 金额\n1417003.17"] * 3
+    out = document_service._strip_headers_footers(pages)
+    assert "1417003.17" in out[0]  # 纯数字行保留，页码正则不匹配它
 
 
 # ========== parse_document：按扩展名分发（monkeypatch 桩，不碰真实文件） ==========

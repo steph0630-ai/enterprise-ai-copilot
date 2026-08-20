@@ -14,7 +14,9 @@ parse_document 把 .pdf/.docx/.txt/.md 分发给对应解析器，全部返回 l
 import io
 import logging
 import os
+import re
 import threading
+from collections import Counter
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -151,6 +153,12 @@ def parse_pdf(file_path: str) -> list[str]:
     ToUnicode 是坏的。pypdf 照表抽，抽出来全是乱码；眼睛看得见、Ctrl+F 搜不到。
     pdfplumber 底层是 pdfminer，会自己重建字形编码，能把这种 PDF 救回来。
 
+    为什么表格要转 Markdown（Day 25.3）：
+    年报"未抵销的递延所得税负债"这类财务表是"科目 × 多期 × 多列"，只 extract_text()
+    会把列结构打平——"应纳税暂时性差异/递延所得税负债/期末/期初"这些列头和数据失去
+    对应，模型把"差异"列的数字当成"负债"列，答案数字就错（真实年报测出来的坑）。
+    Markdown 表格保留"列头↔数据"的对应关系，模型才读得懂列。
+
     参数：
         file_path: PDF 文件的路径
 
@@ -158,8 +166,142 @@ def parse_pdf(file_path: str) -> list[str]:
         ["第一页文本", "第二页文本", ...]
     """
     with pdfplumber.open(file_path) as pdf:
-        # extract_text() 对没有文字层的页（扫描件）返回 None，用 or "" 兜底
-        return [page.extract_text() or "" for page in pdf.pages]
+        pages = [_page_to_markdown(page) for page in pdf.pages]
+    # Day 25.3：剥离重复页眉/页脚 + 页码（真实年报页脚"103/155"污染 chunk）
+    return _strip_headers_footers(pages)
+
+
+def _page_to_markdown(page) -> str:
+    """一页 → 文本：无表格页直接 extract_text；有表格页附加 Markdown 表格
+
+    权衡：extract_text() 已含表格打平的文本，再拼 Markdown 会重复一段表格内容。
+    但"列头↔数据对应"比"去重"重要——错乱比冗余更糟（正是这次年报数字错的根因）。
+    """
+    text = page.extract_text() or ""  # extract_text() 对扫描页返回 None，兜底
+    tables = [t for t in (page.extract_tables() or []) if t]
+    if not tables:
+        return text
+    md = "\n\n".join(_table_to_markdown(t) for t in tables)
+    return text + "\n\n[表格]\n" + md
+
+
+def _table_to_markdown(table: list) -> str:
+    """pdfplumber 抽出的表格（行×列 嵌套 list）→ Markdown 表格
+
+    空单元格 → 空串；单元格内多行 → 空格压平（避免 \n 把 Markdown 行撑爆）。
+    Day 25.3 表头增强：财务表常有两行表头（第一行"项目|期末余额||期初余额|"，
+    第二行才是"可抵扣暂时性差异|递延所得税资产"），只取第一行会把真正列名
+    当数据行，模型读错列。检测到第二行也是表头就合并成一行。
+    """
+    rows = []
+    for row in table:
+        cells = []
+        for c in row:
+            cells.append("" if not c else " ".join(str(c).split()))
+        rows.append(cells)
+    if not rows:
+        return ""
+    # 表头行数：第二行像表头（无金额、含列名词）→ 合并两行当表头
+    header_rows = 2 if len(rows) >= 2 and _looks_like_header_row(rows[1]) else 1
+    header = _merge_header_rows(rows[:header_rows])
+    body = rows[header_rows:]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * len(header)) + " |",
+    ]
+    lines += ["| " + " | ".join(r) + " |" for r in body]
+    return "\n".join(lines)
+
+
+def _looks_like_header_row(cells: list) -> bool:
+    """这一行像是表头：不含金额（有逗号的数字），且含表头特征词
+
+    财务表数据行一定带金额（1,417,003.17），表头行只有列名。
+    用"无金额 + 含表头词"做保守判断，避免把数据行误当表头。
+    """
+    joined = " ".join(cells)
+    if re.search(r"\d{1,3},\d{3}", joined):
+        return False
+    return any(kw in joined for kw in (
+        "项目", "余额", "差异", "资产", "负债", "期末", "期初", "年份", "数量",
+    ))
+
+
+def _merge_header_rows(rows: list[list]) -> list[str]:
+    """把多行表头逐列拼成一行：同列的"期末余额"+"递延所得税负债" → "期末余额 递延所得税负债"
+
+    关键：先做"向右填充"。跨列合并的表头（第一行"期末余额"横跨两列）在
+    pdfplumber 里只在第一列有值、第二列是空，不填充的话第二列就丢了
+    "期末余额"这个前缀，只剩"递延所得税负债"，期末/期初区分就没了。
+    """
+    n = max(len(r) for r in rows)
+    # 1. 每行向右填充（跨列合并：本列空就继承上一非空列的值）
+    filled = []
+    for r in rows:
+        last = ""
+        row = []
+        for j in range(n):
+            v = r[j] if j < len(r) else ""
+            if v:
+                last = v
+            row.append(last)
+        filled.append(row)
+    # 2. 逐列拼接各行
+    merged = []
+    for j in range(n):
+        parts = [filled[i][j] for i in range(len(filled))]
+        merged.append(" ".join(p for p in parts if p))
+    return merged
+
+
+# ========== Day 25.3：页眉页脚剥离 ==========
+# 真实年报的页脚"103/155"、每页重复的"XX公司 2026年半年度报告"混进 chunk，
+# 污染检索结果。两种手法组合：
+#   ① 跨页重复行：公司名/文档标题/机密水印每页都出现 → 重复检测（≥ 60% 页数）
+#   ② 页码模式：每页变化的页码（103/155、第5页、- 5 -）→ 正则识别
+_HEADER_FOOTER_FREQ = 0.6   # 出现在 ≥ 60% 页数 = 重复页眉/页脚
+_MIN_STRIP_PAGES = 3        # 少于 3 页不做（单页没有"重复"意义）
+# 页码模式：只认"像页码"的行，不认裸数字（表格打平出的"1417003.17"绝不能误删）
+_PAGE_NUM_RE = re.compile(
+    r"^\s*(?:第\s*\d+\s*页(?:\s*共\s*\d+\s*页)?"
+    r"|\d{1,4}\s*/\s*\d{1,4}"
+    r"|[-—–]\s*\d+\s*[-—–])\s*$"
+)
+# 纯数字/金额/日期样行（数字+标点）：不因"跨页重复"被剥，防误删表格数字
+_NUMERIC_LINE_RE = re.compile(r"^[\d\s.,，()%¥￥$€\-—–]+$")
+
+
+def _strip_headers_footers(pages: list[str]) -> list[str]:
+    """剥离每页重复的页眉/页脚行和页码，返回剥后的页列表
+
+    为什么在纯文本层做而不是坐标层：extract_text 已经把页眉/页脚/正文混成行，
+    "跨页重复 + 页码模式"两个特征足够稳，且纯函数好测。
+    保守原则：宁可漏剥（如纯数字页码），不能误删正文内容。
+    """
+    if len(pages) < _MIN_STRIP_PAGES:
+        return pages
+    # 1. 统计每行出现在"几页"（每页只计一次，防一页内重复干扰）
+    line_pages: Counter = Counter()
+    for text in pages:
+        for line in {ln.strip() for ln in text.split("\n") if ln.strip()}:
+            line_pages[line] += 1
+    # 2. 页眉/页脚 = 重复出现（≥ 60% 页数）的短文本行 + 页码模式行
+    threshold = len(pages) * _HEADER_FOOTER_FREQ
+    noise = {
+        ln for ln, cnt in line_pages.items()
+        if cnt >= threshold and len(ln) <= 50
+        and not _NUMERIC_LINE_RE.match(ln)  # 纯数字行（表格金额等）不因重复误删
+    }
+    for text in pages:
+        for line in text.split("\n"):
+            s = line.strip()
+            if s and _PAGE_NUM_RE.match(s):
+                noise.add(s)
+    # 3. 逐页剔除
+    return [
+        "\n".join(ln for ln in text.split("\n") if ln.strip() not in noise)
+        for text in pages
+    ]
 
 
 def parse_txt(file_path: str) -> list[str]:
@@ -209,11 +351,16 @@ def _cell_text(cell) -> str:
 
 
 def _table_text(table) -> str:
-    """表格 → 每行一字符串，单元格用 ' | ' 分隔，行间用换行"""
-    lines = []
+    """docx 表格 → Markdown 表格（Day 25.3：和 PDF 表格统一，保留列头↔数据）
+
+    原来用 " | " 分隔打平，多列表格（财务表）的列语义会丢——模型分不清
+    "差异/负债""期末/期初"哪列对哪列，数字就读错。Markdown 带表头行 +
+    分隔行，列头↔数据的对应关系保留（和 _table_to_markdown 同一套）。
+    """
+    rows = []
     for row in table.rows:
-        lines.append(" | ".join(_cell_text(c).replace("\n", " ") for c in row.cells))
-    return "\n".join(lines)
+        rows.append([_cell_text(c).replace("\n", " ") for c in row.cells])
+    return _table_to_markdown(rows)
 
 
 def parse_docx(file_path: str) -> list[str]:
