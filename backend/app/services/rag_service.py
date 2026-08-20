@@ -4,13 +4,25 @@ from app.ai.llm import llm_service
 from app.services.retrieval_service import retrieval_service
 
 # 角色 + 规则（防幻觉的主力写在这）
+# Day 24.5 第 4 条：来源要"只列引用的"。之前模型把检索到的来源全罗列，
+# 无关文档（如讲"流程"的教程 PDF）会混进"报销流程"的答案来源里——召回≠引用。
 SYSTEM_PROMPT = (
     "你是一个企业知识助手。请根据下面提供的资料回答用户的问题。\n"
     "规则：\n"
     "1. 只依据资料回答，资料中没有的信息，明确说\"资料中没有相关内容\"。\n"
     "2. 回答要简洁、准确，用中文。\n"
-    "3. 不要编造，不要使用资料之外的信息。"
+    "3. 不要编造，不要使用资料之外的信息。\n"
+    "4. 回答末尾如需列出来源文件，只列出你回答中实际引用的来源，不要罗列所有资料。"
 )
+
+# Day 24.5：召回噪音过滤的"相关性倍数"。
+# 背景：向量检索按语义相似度捞，语义词撞车（如"流程"）会把无关文档带进 top_k，
+# 它的文件名就混进 sources，用户看到"来源文件里有个不相关的 PDF"。
+# 过滤策略：距离越小越相似（Chroma 默认 L2），超过"最近距离 × 该倍数"的片段视为
+# 明显不相关，直接丢弃——不进来，context 更纯、答案更准、来源更干净。
+# 为什么用相对倍数而不是绝对阈值：L2 距离没有固定范围，绝对阈值没法预设；
+# 相对倍数自适应（最相关的越近，过滤越严；整体都远就都保留），且测试可 mock。
+_RELEVANCE_FACTOR = 2.0
 
 
 class RagService:
@@ -26,7 +38,7 @@ class RagService:
 
     def answer(self, question: str, k: int = 3) -> dict:
         """问一个知识类问题，返回 {answer, sources}"""
-        # 1. 检索：拿 Top K 片段（带来源文件名）
+        # 1. 检索：拿 Top K 片段（带来源文件名 + 距离）
         chunks = self.retrieval.search(question, k=k)
 
         # 没有资料就别硬答（防止 LLM 面对空资料瞎编）
@@ -35,6 +47,10 @@ class RagService:
                 "answer": "知识库中还没有相关文档，请先上传文档。",
                 "sources": [],
             }
+
+        # Day 24.5：过滤明显不相关的召回（语义撞词"流程"把教程 PDF 带进来）。
+        # 只在 RAG 的"决策层"做——retrieval 是通用检索，这里才决定"什么值得用"。
+        chunks = self._filter_relevant(chunks)
 
         # 2. 拼 Prompt 的 Context 段：把片段整理成"资料"段落
         context = "\n\n".join(
@@ -48,6 +64,20 @@ class RagService:
         # 4. 出处一起返回（可追溯）。用 set 去重，只留文件名单
         sources = list({chunk["source"] for chunk in chunks})
         return {"answer": answer, "sources": sources}
+
+    @staticmethod
+    def _filter_relevant(chunks: list[dict]) -> list[dict]:
+        """丢弃"明显不相关"的召回片段，保底至少留 1 个（Day 24.5）
+
+        chunks 已按距离升序（最近在前，store.search 保持 Chroma 顺序）。
+        超过"最近距离 × _RELEVANCE_FACTOR"的视为噪音丢弃；全被丢弃时保底留第 1 个，
+        避免"过滤后空 context"让回答退化成"知识库中没有相关内容"。
+        """
+        if not chunks:
+            return chunks
+        threshold = chunks[0]["distance"] * _RELEVANCE_FACTOR
+        kept = [c for c in chunks if c["distance"] <= threshold]
+        return kept or chunks[:1]
 
 
 # 模块级单例
