@@ -55,11 +55,19 @@ class VectorStore:
         """
         self.collection.delete(where={"document_id": document_id})
 
-    def search(self, query_embedding: list[float], k: int = 3) -> dict:
-        """按查询向量找最相似的 k 个，返回干净的 1 层列表"""
+    def search(
+        self, query_embedding: list[float], k: int = 3, where: dict | None = None
+    ) -> dict:
+        """按查询向量找最相似的 k 个，返回干净的 1 层列表
+
+        where（可选，Day 23）：Chroma 的 metadata 过滤条件，如 {"type": "image"}
+        只查带 type=image 标记的图 chunk。老数据没有该标记 → 查不到，由调用方退回。
+        """
+        kwargs = {"where": where} if where else {}
         result = self.collection.query(
             query_embeddings=[query_embedding],  # 传列表（可批量查），这里只查 1 个
             n_results=k,
+            **kwargs,
         )
 
         # query_embeddings 是"一批查询"，结果外头多套了一层列表；只查 1 个就取 [0]

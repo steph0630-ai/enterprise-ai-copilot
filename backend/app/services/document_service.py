@@ -12,11 +12,14 @@ parse_document 把 .pdf/.docx/.txt/.md 分发给对应解析器，全部返回 l
 """
 
 import io
+import logging
 import os
 import threading
 from pathlib import Path
 
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)  # Day 23：丢图可感知（日志在 main.py 配了 basicConfig）
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import pdfplumber
 # Day 20：python-docx 解析 .docx。
@@ -297,19 +300,27 @@ def extract_docx_images(file_path) -> list[tuple[int, bytes, str]]:
     return images
 
 
-def enrich_pages_with_images(filename: str, pages_text: list[str]) -> list[str]:
+def enrich_pages_with_images(filename: str, pages_text: list[str]) -> tuple[list[str], dict]:
     """图片理解增强层：文档里的图 → 多模态模型描述 → 拼回对应页文本末尾
 
+    返回 (pages_text, stats)：stats = {"total": 尝试处理的图数, "success": 成功,
+    "failed": 失败跳过}，且恒有 total == success + failed（调用方 _ingest 打总结日志）。
+
     快速路径（txt/md 没有内嵌图）直接原样返回，零开销。失败降级：任何一张图
-    （VL 挂/超时/图片损坏）静默跳过，文档照常入库——图片理解是锦上添花，
+    （VL 挂/超时/图片损坏）跳过，文档照常入库——图片理解是锦上添花，
     不该因为看图失败就让整个文档 failed。这和 Day 20 空文档显式失败不冲突：
     那是核心能力（没字可抽 = 文档没用）必须报，这是可降级能力，降级后仍可用。
+
+    Day 23 教训：降级可以静默，但不能无声。之前失败直接 continue，丢图无人知晓
+    （实测尚硅谷 PDF 6 张图只进库 4 条，2 张被静默丢了）。现在失败打 warning 日志
+    + 计数，让"这张图没进去"有迹可循。
 
     数量风控：最多处理 settings.VISION_MAX_IMAGES 张，防一张 100 图的 PPT
     批量上传打爆 API 账单。
     """
+    empty_stats = {"total": 0, "success": 0, "failed": 0}
     if not pages_text:
-        return pages_text
+        return pages_text, empty_stats
 
     # 快速路径：只有 pdf/docx 有内嵌图，其余原样返回
     ext = get_extension(filename)
@@ -318,23 +329,30 @@ def enrich_pages_with_images(filename: str, pages_text: list[str]) -> list[str]:
     elif ext == ".docx":
         images = extract_docx_images(STORAGE_DIR / filename)
     else:
-        return pages_text
+        return pages_text, empty_stats
 
     if not images:
-        return pages_text
+        return pages_text, empty_stats
 
+    stats = {"total": 0, "success": 0, "failed": 0}
     for pos, image_bytes, mime in images[: settings.VISION_MAX_IMAGES]:
+        stats["total"] += 1
         try:
             desc = vision_service.describe_image(image_bytes, mime)
-        except Exception:
-            continue  # 单张图失败跳过，不拖垮整单
-        if not desc:
+        except Exception as e:
+            stats["failed"] += 1
+            logger.warning("图片描述失败（跳过，不影响入库）：%s", e)
             continue
+        if not desc:
+            stats["failed"] += 1
+            logger.warning("图片描述为空（VL 没看明白这张图），跳过")
+            continue
+        stats["success"] += 1
         # PDF：拼到对应页；docx：全拼到唯一那页（pages_text[0]）
         target = pos if 0 <= pos < len(pages_text) else 0
         pages_text[target] = f"{pages_text[target]}\n\n[图：{desc}]"
 
-    return pages_text
+    return pages_text, stats
 
 
 # 扩展名 → 解析器（Day 20 分发表）。
@@ -407,8 +425,8 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
     pages_text = parse_document(filename, str(abs_path))
 
     # Day 21：图片理解增强层——把文档里的图翻译成文字描述拼回文本流。
-    # 失败自动降级（单图跳过），不影响下面继续入库。
-    pages_text = enrich_pages_with_images(filename, pages_text)
+    # Day 23：失败自动降级（单图跳过）但不再无声——返回 stats，下面打总结日志。
+    pages_text, img_stats = enrich_pages_with_images(filename, pages_text)
 
     # Day 20：空文档（扫描件伪装成 PDF / 空 txt / 空 docx）显式失败，
     # 不静默"processed + 0 chunk"——用户看到 failed + 原因，才知道
@@ -427,9 +445,16 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i : i + batch_size]
         ids = [f"doc_{document_id}_chunk_{j}" for j in range(i, i + len(batch))]
+        # Day 23：含图片描述（"[图：" 前缀）的 chunk 打 type=image 标记，
+        # 检索层才能按"这是图"过滤/加权。不含图的不带 type key（向后兼容）。
         metadatas = [
-            {"source": filename, "document_id": document_id, "chunk_index": j}
-            for j in range(i, i + len(batch))
+            {
+                "source": filename,
+                "document_id": document_id,
+                "chunk_index": j,
+                **({"type": "image"} if "[图：" in chunk else {}),
+            }
+            for chunk, j in zip(batch, range(i, i + len(batch)))
         ]
 
         embeddings = embedding_service.embed_documents(batch)  # 慢的 API 调用，放锁外
@@ -453,6 +478,12 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
                 )
         db.commit()
 
+    # Day 23：丢图可感知——每次入库结束打一行总结，重传文档就能在日志里看到
+    # "有几张图没进去、为什么"。之前静默降级，用户根本不知道哪张图丢了。
+    logger.info(
+        "文档 %s：尝试描述 %d 张图，成功 %d，失败跳过 %d",
+        filename, img_stats["total"], img_stats["success"], img_stats["failed"],
+    )
     return len(chunks)
 
 

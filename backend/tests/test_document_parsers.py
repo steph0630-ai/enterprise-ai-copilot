@@ -253,11 +253,13 @@ def test_enrich_pdf_inserts_image_description(monkeypatch):
         lambda img, mime: "报销审批流程图：提交→审批→打款",
     )
 
-    out = document_service.enrich_pages_with_images("a.pdf", ["第一页正文"])
+    out, stats = document_service.enrich_pages_with_images("a.pdf", ["第一页正文"])
 
     assert len(out) == 1
     assert "第一页正文" in out[0]  # 原文本还在
     assert "[图：报销审批流程图" in out[0]  # 描述拼上了
+    # Day 23：stats 计数正确（1 张成功）
+    assert stats == {"total": 1, "success": 1, "failed": 0}
 
 
 def test_enrich_txt_no_image_fast_path(monkeypatch):
@@ -275,8 +277,13 @@ def test_enrich_txt_no_image_fast_path(monkeypatch):
         lambda img, mime: "不该被调",
     )
 
-    assert document_service.enrich_pages_with_images("a.txt", ["内容"]) == ["内容"]
-    assert document_service.enrich_pages_with_images("a.md", ["内容"]) == ["内容"]
+    # Day 23：快速路径返回 (文本, stats 全 0)——没处理任何图
+    assert document_service.enrich_pages_with_images("a.txt", ["内容"]) == (
+        ["内容"], {"total": 0, "success": 0, "failed": 0},
+    )
+    assert document_service.enrich_pages_with_images("a.md", ["内容"]) == (
+        ["内容"], {"total": 0, "success": 0, "failed": 0},
+    )
     assert called["n"] == 0  # 两个提取函数一次都没被调
 
 
@@ -292,8 +299,10 @@ def test_enrich_vision_failure_degrades(monkeypatch):
 
     monkeypatch.setattr(document_service.vision_service, "describe_image", boom)
 
-    out = document_service.enrich_pages_with_images("a.pdf", ["第一页正文"])
+    out, stats = document_service.enrich_pages_with_images("a.pdf", ["第一页正文"])
     assert out == ["第一页正文"]  # 原样返回，没抛异常
+    # Day 23：失败被计数（不再无声）
+    assert stats == {"total": 1, "success": 0, "failed": 1}
 
 
 def test_enrich_respects_vision_max_images(monkeypatch):
@@ -311,8 +320,10 @@ def test_enrich_respects_vision_max_images(monkeypatch):
     )
 
     pages = [f"第{i}页" for i in range(5)]
-    out = document_service.enrich_pages_with_images("a.pdf", pages)
+    out, stats = document_service.enrich_pages_with_images("a.pdf", pages)
 
     assert len(calls) == 2  # 只调了前 2 张
     assert "[图：" in out[0] and "[图：" in out[1]
     assert "[图：" not in out[2]  # 第 3 张起没处理
+    # Day 23：只统计处理过的 2 张（total 不是 5）
+    assert stats == {"total": 2, "success": 2, "failed": 0}
