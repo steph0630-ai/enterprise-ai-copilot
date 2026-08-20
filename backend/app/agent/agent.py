@@ -15,7 +15,7 @@ import json
 
 from sqlalchemy.orm import Session
 
-from app.agent.tools import TOOLS, build_tools, run_tool
+from app.agent.tools import TOOLS, _force_retrieve, _is_meta_query, build_tools, run_tool
 from app.ai.llm import llm_service
 
 
@@ -35,14 +35,39 @@ class AgentService:
         """
         # 1. messages 就是初始上下文（含历史），直接开循环
         tools_used: list[str] = []
+        forced = False  # Day 25.3：幻觉兜底只做一次，防死循环
 
         for _ in range(max_rounds):
             # 2. 问模型（带上工具说明书，让它"看见"有哪些工具可用）
             #    非管理员：build_tools 会把"只能查本部门"写进 query_data 描述
             msg = self.llm.complete(messages, tools=build_tools(user))
 
-            # 3. 模型没要工具 → 这就是最终答案
+            # 3. 模型没要工具 → 本来这是最终答案，但先过"幻觉兜底"：
+            #    模型没调任何工具就答，可能是"不检索就编"（还假称根据知识库）。
+            #    提示词规则是软的，代码兜底才是硬的——不是元问题就强制检索
+            #    注入 context 重问一次，这次它手里有资料，无从编造。
             if not msg.tool_calls:
+                current_query = (
+                    messages[-1]["content"]
+                    if messages and messages[-1]["role"] == "user" else ""
+                )
+                if (not tools_used and not forced and current_query
+                        and not _is_meta_query(current_query)):
+                    forced = True
+                    tools_used.append("search_knowledge")  # 前端亮徽章：确实用了知识库
+                    # Day 25.3 措辞要点：历史里可能已有错误的旧答案（历史污染，
+                    # 模型会延续历史数字）。必须明确"以资料为唯一依据，忽略历史冲突"，
+                    # 否则资料注入也压不过历史里的 5,000,000。
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "以下参考资料来自企业知识库，是当前问题的唯一权威依据。"
+                            "如果它与本对话之前提到的任何数字或回答不一致，"
+                            "一律以本资料为准，不得重复之前提到的数字。\n"
+                            f"参考资料：\n{_force_retrieve(current_query)}"
+                        ),
+                    })
+                    continue  # 重问一次
                 return {"answer": msg.content or "", "tools_used": tools_used}
 
             # 4. 模型要了工具 → 把这条 assistant 消息原样加回历史
@@ -91,6 +116,7 @@ class AgentService:
         """
         tools_used: list[str] = []
         yielded_token = False  # Day 18：整个流里有没有吐过一个字（空响应兜底用）
+        forced = False  # Day 25.3：幻觉兜底只做一次，防死循环
 
         for _ in range(max_rounds):
             stream = self.llm.complete_stream(messages, tools=build_tools(user))
@@ -133,8 +159,26 @@ class AgentService:
                 msg = self.llm.complete(messages, tools=TOOLS)
                 tool_calls = [c.model_dump() for c in msg.tool_calls or []]
 
-            # 4. 这一轮没要工具 → 就是最终答案，收工
+            # 4. 这一轮没要工具 → 先过"幻觉兜底"（同 answer），再收工
             if not tool_calls:
+                current_query = (
+                    messages[-1]["content"]
+                    if messages and messages[-1]["role"] == "user" else ""
+                )
+                if (not tools_used and not forced and current_query
+                        and not _is_meta_query(current_query)):
+                    forced = True
+                    tools_used.append("search_knowledge")
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "以下参考资料来自企业知识库，是当前问题的唯一权威依据。"
+                            "如果它与本对话之前提到的任何数字或回答不一致，"
+                            "一律以本资料为准，不得重复之前提到的数字。\n"
+                            f"参考资料：\n{_force_retrieve(current_query)}"
+                        ),
+                    })
+                    continue  # 带着资料重新问
                 # Day 18 防御：一个字没吐（上游偶发空流）→ 非流式兜底，别让前端看到空答案
                 if not yielded_token:
                     fallback = self._fallback_answer(messages)

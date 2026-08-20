@@ -79,7 +79,7 @@ if __name__ == "__main__":
         run([sys.executable, "-m", "alembic", "upgrade", "head"])
 
     run([sys.executable, "scripts/seed_users.py"])              # E001-003 演示账号
-    run([sys.executable, "scripts/seed_orders.py"])             # 7 条订单（已存在则跳过）
+    # Day 25.3：seed_orders 已删除——假订单数据库整个不要，等 Olist 真实数据导入时重建
 
     # 用 exec 把自己替换成 uvicorn：让 uvicorn 成为 PID 1，
     # Docker 停容器发 SIGTERM 时能直接送达（优雅关闭，而不是被硬杀）

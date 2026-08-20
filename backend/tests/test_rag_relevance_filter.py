@@ -37,7 +37,8 @@ def test_filter_drops_distant_chunk(monkeypatch):
 
     assert "尚硅谷" not in captured["context"], "无关 chunk 不应进 LLM context"
     assert "报销单需填写" in captured["context"], "相关 chunk 应保留"
-    assert res["sources"] == ["报销制度.docx", "company_policy.pdf"]
+    # sources 是 set 去重后的列表，迭代顺序随进程 hash seed 变——断言集合而不是列表
+    assert set(res["sources"]) == {"报销制度.docx", "company_policy.pdf"}
     assert "尚硅谷" not in str(res["sources"])
 
 

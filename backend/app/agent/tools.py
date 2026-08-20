@@ -27,6 +27,11 @@ TOOLS = [
                 # Day 19：扩容触发条件——原来只写"制度/流程/规定/政策"，
                 # 用户问"工具调用方式"这类教程/课程问题，模型判断不是知识类就不查库。
                 "当用户询问公司制度、流程、规定、政策、概念、教程、课程内容等知识类问题时使用。"
+                # Day 25.1：真实文档暴露的工具边界——问年报"流动负债"时模型误判成
+                # "数据库数据"去调 query_data。这里明确：文档里的具体事实/数字
+                # 也走知识库检索，因为它们在文档里，不在系统数据库里。
+                "用户上传的文档里的具体事实和数据也走本工具，"
+                "如年报的财务数字、报表数据、统计数字、产品参数等。"
             ),
             "parameters": {
                 "type": "object",
@@ -54,6 +59,12 @@ TOOLS = [
             "description": (
                 "根据用户的问题，针对 orders 表生成一条 SELECT 语句并执行，返回查询结果。"
                 "当用户询问订单数量、金额等数据类问题时使用。\n"
+                # Day 25.1：工具边界——query_data 只能查系统数据库的业务表。
+                # 用户上传的知识库文档（如年报、制度）里的数据不在数据库里，
+                # 别用本工具，否则查到"知识库中没有"就错了。
+                "注意：本工具只能查询系统数据库中的业务表（orders）。"
+                "用户上传的知识库文档（如年报、制度）里的数据不在数据库里，"
+                "不要用本工具，请改用 search_knowledge。\n"
                 "orders 表结构：\n"
                 "- id: INTEGER，主键\n"
                 "- department: VARCHAR(50)，部门名称，如 销售一部、销售二部、市场部\n"
@@ -125,6 +136,38 @@ def _search_knowledge(query: str, top_k: int | None = None) -> dict:
     top_k = min(max(top_k, 1), 10)
     result = rag_service.answer(query, k=top_k)
     return {"answer": result["answer"], "sources": result["sources"]}
+
+
+# ========== Day 25.3：模型不调工具的强制检索兜底 ==========
+# 背景：模型"经常"违反规则 1 不调 search_knowledge 就直接答，甚至编数字还假称
+# "根据企业知识库"。提示词规则是软的，代码兜底才是硬的——模型不肯检索，
+# 后端替它检索，把结果注入 context 逼它基于资料重答。
+# 排除的系统元问题（规则 2 允许不检索直接答，兜底别误伤）：
+META_QUERY_KEYWORDS = (
+    "你这个", "你的工具", "你的系统", "平台架构", "技术栈",
+    "怎么用工具", "你的功能", "你是谁", "你支持", "你叫什么",
+)
+
+
+def _is_meta_query(query: str) -> bool:
+    """这是"关于系统本身"的元问题吗？（是则不强制检索）"""
+    return any(kw in query for kw in META_QUERY_KEYWORDS)
+
+
+def _force_retrieve(query: str) -> str:
+    """强制检索知识库，返回可直接注入 context 的参考资料文本（兜底用）
+
+    不调 LLM、不生成答案——只把最相关的 chunk 原文拼出来。
+    无结果时明说"没有"，让模型无从编造。
+    """
+    chunks = rag_service.retrieval.search(query, k=3)
+    chunks = rag_service._filter_relevant(chunks)
+    if not chunks:
+        return "（知识库中没有相关文档）"
+    return "\n\n".join(
+        f"[资料{idx + 1} 来源:{c['source']}]\n{c['text']}"
+        for idx, c in enumerate(chunks)
+    )
 
 
 def _json_safe(value):
