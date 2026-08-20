@@ -32,7 +32,16 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "用户的问题或想检索的内容"},
-                    "top_k": {"type": "integer", "description": "返回最相关的片段数，默认 3"},
+                    # Day 22：教模型按问题类型选 top_k——列举/概括类问题召回要够全
+                    "top_k": {
+                        "type": "integer",
+                        "description": (
+                            "返回的最相关片段数，默认 3。列举/概括类问题"
+                            "（如\"有哪些工具\"\"列出所有流程\"\"总结一下内容\"）"
+                            "请设为 8~10 召回更全再回答；"
+                            "具体事实类问题（如\"报销限额是多少\"）用 3 即可。"
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -85,8 +94,35 @@ def build_tools(user=None) -> list[dict]:
 
 # ========== 实际执行函数（模型看不到这里） ==========
 
-def _search_knowledge(query: str, top_k: int = 3) -> dict:
-    """知识类工具：复用 Day 6 的完整 RAG（检索 + 生成 + 出处）"""
+# 列举/概括类关键词：命中说明问题要"召回全面"，给大 top_k（Day 22）
+# 对应两个真实故障：问工具列表只答 3/17 个、图描述 chunk 被挤出前 3
+ENUM_KEYWORDS = (
+    "有哪些", "哪些", "列出", "列举", "所有", "全部", "清单",
+    "几个", "几种", "分别", "对比", "总结", "概括", "概述", "汇总",
+)
+
+
+def _infer_top_k(query: str) -> int:
+    """按问题类型推断检索量：列举/概括类要召回够全，具体事实类要够准
+
+    Day 22：search_knowledge 固定 top_k=3 的根因不是管道不通——
+    top_k 参数本来就能从模型一路传到 Chroma 的 n_results，
+    而是没人决定 k 该取多大，模型几乎从不传这个可选参数。
+    这里做后端兜底：模型没给 top_k 时，按问题里的关键词判断类型。
+    """
+    return 10 if any(kw in query for kw in ENUM_KEYWORDS) else 3
+
+
+def _search_knowledge(query: str, top_k: int | None = None) -> dict:
+    """知识类工具：复用 Day 6 的完整 RAG（检索 + 生成 + 出处）
+
+    默认值 None 而不是 3（Day 22）：这样才能区分"模型没传"（→ 推断）
+    和"模型特意传了 3"（具体事实类问题，精确优先，尊重它）。
+    最后 clamp 1~10——Agent 链路是唯一没夹紧 top_k 的地方，模型可能传 100000。
+    """
+    if top_k is None or top_k <= 0:
+        top_k = _infer_top_k(query)
+    top_k = min(max(top_k, 1), 10)
     result = rag_service.answer(query, k=top_k)
     return {"answer": result["answer"], "sources": result["sources"]}
 
