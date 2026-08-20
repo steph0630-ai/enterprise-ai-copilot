@@ -2,7 +2,10 @@
 // 组合式 API：<script setup> 里写的变量/函数，模板里直接用（Day 9）
 // Day 10：send() 改成流式接收 SSE，Agent 的答案一个字一个字蹦出来
 // Day 12：登录才能用——没 token 显示登录页，请求带 Authorization 头，401 回登录页
-import { ref, computed, nextTick } from 'vue'
+// Day 24：会话列表侧边栏——刷新后从后端拉回历史（数据 Day 11 就落库了，
+//         缺的是"读的接口 + 前端恢复"），可新建/切换/删除会话
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import Login from './components/Login.vue'
 import AdminPanel from './components/AdminPanel.vue'  // Day 14：管理后台（只有管理员能进）
 
@@ -16,6 +19,7 @@ function onLogin(access_token, userInfo) {
   user.value = userInfo
   localStorage.setItem('token', access_token)
   localStorage.setItem('user', JSON.stringify(userInfo))
+  loadConversations(true)  // Day 24：登录后拉回最近会话，不用从空白开始
 }
 
 // 双入口（Day 14）：'chat' 聊天页 / 'admin' 管理后台
@@ -32,6 +36,7 @@ function logout() {
   localStorage.removeItem('user')
   messages.value = []
   conversationId.value = ''
+  conversations.value = []  // Day 24：会话列表跟着清
   view.value = 'chat'
 }
 
@@ -42,6 +47,8 @@ const loading = ref(false)   // 等 Agent 回复时禁用按钮，防重复提�
 const listRef = ref(null)    // 消息容器 DOM 引用，用于滚动到底部
 // 会话 id（Day 11 多轮记忆）：空 = 新会话；后端第一帧 conv 事件会给一个真值
 const conversationId = ref('')
+// 会话列表（Day 24 侧边栏）：后端存的，刷新后拉回来 → 历史不丢
+const conversations = ref([])
 
 async function send() {
   const question = input.value.trim()
@@ -118,6 +125,7 @@ function handleEvent(raw) {
   } else if (event.type === 'done') {
     if (!last.content) last.content = '（Agent 没有返回内容，请重试）'
     if (event.tools_used && last.tools.length === 0) last.tools = event.tools_used
+    loadConversations()  // Day 24：这一轮落库了，静默刷新侧边栏（标题/排序更新）
     scrollBottom()
   } else if (event.type === 'error') {
     last.content = (last.content || '') + `\n[出错] ${event.message}`
@@ -130,6 +138,91 @@ function scrollBottom() {
   nextTick(() => {
     if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight
   })
+}
+
+// ===== Day 24：会话列表侧边栏 =====
+
+// 进入页面就恢复历史：已登录 → 拉列表 → 打开最近一个会话（刷新不丢历史的核心）
+onMounted(() => loadConversations(true))
+
+// 拉会话列表。openLatest=true 时若当前不在任何会话里，自动打开最近一个
+async function loadConversations(openLatest = false) {
+  if (!token.value) return
+  try {
+    const res = await fetch('/api/v1/agent/conversations', {
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    if (res.status === 401) {
+      logout()
+      return
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    conversations.value = await res.json()
+    if (openLatest && !conversationId.value && conversations.value.length) {
+      openConversation(conversations.value[0])  // 最近一个（后端按最后活动倒序）
+    }
+  } catch (e) {
+    console.error('加载会话列表失败', e)  // 列表失败不阻塞聊天
+  }
+}
+
+// 点历史会话：切 conversationId + 拉完整历史渲染。后端校验"只能看自己的"
+async function openConversation(c) {
+  if (loading.value || c.id === conversationId.value) return  // 正等回答 / 已是当前
+  loading.value = true
+  try {
+    const res = await fetch(`/api/v1/agent/conversations/${c.id}`, {
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    if (res.status === 401) {
+      logout()
+      return
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    conversationId.value = c.id
+    // 历史只存了 role+content（Day 11），tools 徽章补不了 → 空数组，诚实边界
+    messages.value = data.messages.map((m) => ({ role: m.role, content: m.content, tools: [] }))
+  } catch (e) {
+    ElMessage.error(`加载会话失败：${e.message}`)
+  } finally {
+    loading.value = false
+    scrollBottom()
+  }
+}
+
+// 新建会话：清空消息和会话 id，下一句提问后端会开新会话
+function newConversation() {
+  messages.value = []
+  conversationId.value = ''
+}
+
+// 删会话（含历史）：先确认，再 DELETE，级联删消息
+async function removeConversation(c) {
+  try {
+    await ElMessageBox.confirm(
+      `删除会话「${c.title || '未命名对话'}」？对话记录将一并删除。`,
+      '删除会话',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return  // 用户点了取消
+  }
+  try {
+    const res = await fetch(`/api/v1/agent/conversations/${c.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    if (res.status === 401) {
+      logout()
+      return
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    conversations.value = conversations.value.filter((x) => x.id !== c.id)
+    if (conversationId.value === c.id) newConversation()  // 删的是当前会话 → 跳新建
+  } catch (e) {
+    ElMessage.error(`删除失败：${e.message}`)
+  }
 }
 </script>
 
@@ -166,7 +259,26 @@ function scrollBottom() {
     </header>
 
     <template v-if="view === 'chat'">
-    <main class="chat">
+    <!-- Day 24：左会话列表 + 右聊天。历史从后端拉（数据 Day 11 就在库里） -->
+    <div class="chat-layout">
+      <aside class="sidebar">
+        <el-button class="new-btn" type="primary" plain size="small" @click="newConversation">
+          ＋ 新建会话
+        </el-button>
+        <div v-if="conversations.length === 0" class="sidebar-empty">暂无历史会话</div>
+        <div
+          v-for="c in conversations"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === conversationId }"
+          @click="openConversation(c)"
+        >
+          <span class="conv-title">{{ c.title || '未命名对话' }}</span>
+          <span class="conv-del" title="删除会话" @click.stop="removeConversation(c)">✕</span>
+        </div>
+      </aside>
+
+      <main class="chat">
       <div class="messages" ref="listRef">
         <div v-if="messages.length === 0" class="empty">
           👋 试试问：<br />
@@ -196,7 +308,8 @@ function scrollBottom() {
         />
         <el-button type="primary" :loading="loading" @click="send">发送</el-button>
       </footer>
-    </main>
+      </main>
+    </div>
     </template>
 
     <!-- Day 14：管理员切到管理后台（文档/用户管理）；Day 15：传 userRole 决定角色列能不能改 -->
@@ -210,8 +323,82 @@ function scrollBottom() {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  max-width: 860px;
+  max-width: 1024px; /* Day 24：加了侧边栏，860px 太挤 */
   margin: 0 auto;
+}
+
+/* Day 24：左会话列表 + 右聊天 */
+.chat-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid #e5e7eb;
+  background: #fafafa;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.new-btn {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.sidebar-empty {
+  color: #86909c;
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1f2329;
+}
+
+.conv-item:hover {
+  background: #f0f2f5;
+}
+
+.conv-item.active {
+  background: #e8f3ff;
+  color: #1664ff;
+}
+
+.conv-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 删除按钮：默认隐藏，hover 列表项才出现（避免误点） */
+.conv-del {
+  color: #c0c4cc;
+  font-size: 12px;
+  visibility: hidden;
+}
+
+.conv-item:hover .conv-del {
+  visibility: visible;
+}
+
+.conv-del:hover {
+  color: #f56c6c;
 }
 
 .header {
