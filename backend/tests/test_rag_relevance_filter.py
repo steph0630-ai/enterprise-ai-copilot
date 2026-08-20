@@ -122,3 +122,35 @@ def test_agent_prompt_source_rule(monkeypatch):
     system = messages[0]["content"]
     assert "只列出你实际引用的来源" in system
     assert "不要罗列工具返回的所有来源" in system
+
+
+# ========== Day 24.6：冲突文档处理 ==========
+
+def test_system_prompt_conflict_rule():
+    """RAG 提示词要求：来源说法不一致时并列各方说法，不自行选择/糅合"""
+    assert "说法不一致" in SYSTEM_PROMPT
+    assert "不要自行选择其中一个" in SYSTEM_PROMPT
+    assert "分别列出各来源的说法" in SYSTEM_PROMPT
+
+
+def test_agent_prompt_conflict_rule(monkeypatch):
+    """Agent 的 system prompt 也有冲突规则（两条链路都要约束，防模型悄悄二选一）"""
+    from app.api.v1 import agent as agent_api
+
+    monkeypatch.setattr(
+        agent_api.conversation_service, "get_or_create",
+        lambda *a, **k: SimpleNamespace(id="c1"),
+    )
+    monkeypatch.setattr(
+        agent_api.conversation_service, "history", lambda *a, **k: []
+    )
+
+    req = SimpleNamespace(query="报销流程是什么", conversation_id="")
+    user = SimpleNamespace(
+        id=1, name="张三", employee_no="E100", role="employee", department="销售一部"
+    )
+    messages, _ = agent_api._build_messages(req, user, db=None)
+    system = messages[0]["content"]
+    assert "说法不一致" in system
+    assert "不要自行选择其中一个" in system
+    assert "分别列出各来源的说法" in system
