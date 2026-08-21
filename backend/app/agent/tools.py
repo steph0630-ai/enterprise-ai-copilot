@@ -5,6 +5,7 @@ description 写得好不好，直接决定模型能不能选对工具。
 """
 
 import copy
+import re
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -183,6 +184,24 @@ def _json_safe(value):
     return value
 
 
+def _validate_query_scope(sql: str) -> str | None:
+    """限制数据工具只能读取 orders，避免 SELECT 变成任意表读取器。"""
+    lower = sql.lower()
+    if re.search(r"--|/\*|\*/|#", sql):
+        return "SQL 不允许包含注释"
+    if re.search(r"\b(?:union|with|into|outfile|load_file)\b", lower):
+        return "SQL 包含不允许的查询结构"
+    if len(re.findall(r"\bselect\b", lower)) != 1:
+        return "只允许查询 orders 表且不允许子查询"
+    if re.search(r"\bfrom\b[^;]*(?:,|\bjoin\b)", lower):
+        return "只允许查询 orders 表，不允许 JOIN 或多表查询"
+
+    tables = re.findall(r"\bfrom\s+([`a-zA-Z_][\w$]*(?:\.[`a-zA-Z_][\w$]*)?)", lower)
+    if len(tables) != 1 or tables[0].strip("`") != "orders":
+        return "只允许查询 orders 表"
+    return None
+
+
 def _query_data(db: Session, sql: str, user=None) -> dict:
     """数据类工具：执行模型生成的 SELECT，返回结果（NL2SQL，Day 8）
 
@@ -200,6 +219,10 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
         return {"error": "只允许 SELECT 查询"}
     if ";" in body:
         return {"error": "只允许单条 SQL 语句"}
+
+    scope_error = _validate_query_scope(body)
+    if scope_error:
+        return {"error": scope_error}
 
     # 部门权限：非管理端必须查自己部门。生产上用只读账号 + 数据库视图/RLS，
     # 这里用"SQL 里必须有本部门字样"做第 4 道防线，简单且能演示错误自愈。

@@ -88,3 +88,27 @@ def test_employee_cannot_query_other_department(db_session):
         employee,
     )
     assert "error" in res and "权限不足" in res["error"]
+
+
+def test_query_data_cannot_read_users_table(db_session):
+    """数据工具即使收到 SELECT，也不能越出 orders 业务表范围。"""
+    seed_orders(db_session)
+    res = _query_data(
+        db_session,
+        "SELECT employee_no, hashed_password FROM users WHERE department='销售一部'",
+        make_user("employee", "销售一部"),
+    )
+    assert "error" in res
+    assert "orders" in res["error"]
+
+
+def test_query_data_rejects_subquery_outside_orders(db_session):
+    """禁止通过 orders 外壳嵌套读取其他表。"""
+    seed_orders(db_session)
+    res = _query_data(
+        db_session,
+        "SELECT (SELECT COUNT(*) FROM users) AS n FROM orders WHERE department='销售一部'",
+        make_user("employee", "销售一部"),
+    )
+    assert "error" in res
+    assert "orders" in res["error"]
