@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
 
@@ -16,6 +19,8 @@ venv/
 # 系统文件
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
 
 # 开发日志（只在本地，不推 GitHub）
 docs/development_log.md
@@ -29,3 +34,7 @@ backend/app/storage/chroma/
 
 # 测试用的 PDF（临时文件）
 *.pdf
+
+# Frontend build artifacts
+node_modules/
+dist/

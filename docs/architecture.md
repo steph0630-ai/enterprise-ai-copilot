@@ -1,60 +1,57 @@
 # 系统架构
 
-> 企业智能知识库 Agent —— 整体架构设计 v2.0（Day 3 升级版）
+## 当前运行架构
 
-## 架构图
+```text
+Browser
+  |
+  v
+Nginx (Vue static files + /api reverse proxy)
+  |
+  v
+FastAPI
+  |-- JWT authentication and role checks
+  |-- Agent loop
+  |    |-- knowledge tool -> RAG
+  |    `-- data tool -> MySQL query
+  |-- conversation and document APIs
+  `-- in-process document background task
+       |-- parse text, tables and images
+       |-- call embedding / vision APIs
+       |-- write chunks to MySQL
+       `-- write vectors to Chroma
 
+State:
+  MySQL              users, documents, chunks, conversations, messages
+  Chroma             document embeddings and metadata
+  Local file system  uploaded source files
+
+External AI services:
+  SiliconFlow-compatible API  embedding and chat completion
+  Zhipu API                   document image understanding
 ```
-                用户
-                 |
-             Web/API
-                 |
-             FastAPI
-                 |
-        -------------------
-        |                 |
-    Agent核心          用户系统
-        |                 |
-   ------------      (JWT登录/权限)
-   |          |
-  RAG        Tools
-   |          |
-Vector DB   MySQL
-   |
-Embedding
-   |
-  LLM
+
+## 请求链路
+
+知识问题：
+
+```text
+用户问题 -> Agent -> search_knowledge -> Embedding -> Chroma
+        -> relevant chunks -> LLM -> answer with sources
 ```
 
-## 三层关系（大脑 / 手 / 仓库）
+业务数据问题：
 
-| 角色 | 是什么 | 对应 |
-| --- | --- | --- |
-| 大脑 | 判断任务、发号施令 | Agent 核心 |
-| 手 | 执行具体动作 | RAG（查知识）、Tools（查数据）|
-| 仓库 | 数据实际存放处 | Vector DB（文档向量）、MySQL（业务表）|
+```text
+用户问题 -> Agent -> query_data -> MySQL -> structured result -> LLM answer
+```
 
-> 一句话：**Agent 是大脑，RAG/Tools 是两只手，Vector DB/MySQL 是两个仓库。**
+## 当前部署边界
 
-## 两条查询路径
+当前 Docker Compose 面向本地开发和单机演示：
 
-| 问题类型 | 判断 | 路径 |
-| --- | --- | --- |
-| "报销流程是什么"（知识类）| 调 RAG | 问题 → Embedding → Vector DB 检索 → LLM 回答 |
-| "这个月报销多少钱"（数据类）| 调 Tools | 问题 → SQL Tool 生成 SQL → MySQL → LLM 回答 |
+- FastAPI 文档任务运行在 Web 进程内，进程退出后未完成任务不会自动恢复。
+- Chroma 和上传文件使用本地磁盘，不适合多个后端副本共享。
+- 外部模型调用会发送问题、检索片段或文档图片，需要在生产环境补充数据治理。
 
-## 为什么需要 Agent（而不是普通 RAG）
-
-- **普通 RAG**：`问题 → 检索 → 回答`，只会查知识，文档里没有就答"我不知道"。
-- **Agent**：`问题 → 判断 → 选工具 → 执行 → 回答`，会分流：知识类走 RAG、数据类走 SQL，还能多轮思考。
-
-## 为什么不用直接调 LLM
-
-模型是通用的，**不知道企业私有数据**，也**不会查数据库**。必须靠 RAG 检索私有文档 + Tools 查业务库，Agent 把结果喂给 LLM 才能回答。
-
-## 辅助组件
-
-| 组件 | 作用 |
-| --- | --- |
-| 用户系统 | JWT 登录鉴权、角色权限（员工 / 管理员）|
-| 异步任务 | 文档解析 + Embedding 耗时，后台处理不阻塞用户请求 |
+生产化时优先外置任务和状态，不需要先拆分业务微服务。
