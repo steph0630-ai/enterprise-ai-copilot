@@ -45,6 +45,39 @@ def test_ingest_metadata_type(monkeypatch, db_session):
             assert "type" not in meta, f"普通 chunk 不应带 type: {doc!r}"
 
 
+def test_ingest_metadata_table_type(monkeypatch, db_session):
+    """独立表格 chunk 的 metadata 带 type=table。"""
+    captured = {}
+    monkeypatch.setattr(
+        document_service,
+        "parse_document",
+        lambda filename, path: [
+            "正文段落\n\n[表格]\n| 项目 | 金额 |\n| --- | --- |\n| 合计 | 100 |\n[表格结束]"
+        ],
+    )
+    monkeypatch.setattr(document_service, "extract_pdf_images", lambda path: [])
+    monkeypatch.setattr(
+        document_service.embedding_service,
+        "embed_documents",
+        lambda batch: [[0.1] * 8] * len(batch),
+    )
+    monkeypatch.setattr(
+        document_service.vector_store,
+        "add",
+        lambda ids, embeddings, documents, metadatas: captured.update(
+            documents=documents, metadatas=metadatas
+        ),
+    )
+
+    document_service._ingest(db_session, 1000, "a.pdf")
+
+    table_meta = next(
+        meta for doc, meta in zip(captured["documents"], captured["metadatas"])
+        if doc.startswith("[表格]\n")
+    )
+    assert table_meta["type"] == "table"
+
+
 # ========== store.search 的 where 过滤 ==========
 
 def test_store_search_where():

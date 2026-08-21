@@ -201,8 +201,59 @@ def test_parse_pdf_page_with_table_emits_markdown(monkeypatch):
 
     out = document_service.parse_pdf("/no/such.pdf")
     assert "[表格]" in out[0]
+    assert "[表格结束]" in out[0]
     assert "| 项目 | 递延所得税负债 |" in out[0]
     assert "1417003.17" in out[0]
+
+
+def test_parse_pdf_page_excludes_table_text_when_bbox_is_available(monkeypatch):
+    """有表格边界时，正文不应再包含一份打平表格。"""
+    class FilteredPage:
+        def extract_text(self):
+            return "正文"
+
+    class FakeTable:
+        bbox = (0, 100, 500, 300)
+
+        def extract(self):
+            return [["项目", "金额"], ["合计", "100"]]
+
+    class FakePage:
+        def extract_text(self):
+            return "正文\n项目 金额\n合计 100"
+
+        def find_tables(self):
+            return [FakeTable()]
+
+        def filter(self, predicate):
+            return FilteredPage()
+
+    class FakePDF:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(document_service.pdfplumber, "open", lambda path: FakePDF())
+    out = document_service.parse_pdf("/no/such.pdf")
+    assert out[0].startswith("正文\n\n[表格]")
+    assert out[0].count("| 合计 | 100 |") == 1
+    assert "项目 金额\n合计 100" not in out[0]
+
+
+def test_split_text_keeps_table_as_one_chunk():
+    """表格独立成 chunk，不被普通正文切分器从中间截断。"""
+    pages = [
+        "前面的正文\n\n[表格]\n| 项目 | 金额 |\n| --- | --- |\n| 合计 | 100 |\n[表格结束]\n\n后面的正文"
+    ]
+    chunks = document_service.split_text(pages, chunk_size=10, chunk_overlap=2)
+    table_chunks = [chunk for chunk in chunks if chunk.startswith("[表格]")]
+    assert len(table_chunks) == 1
+    assert "| 合计 | 100 |" in table_chunks[0]
+    assert "[表格结束]" not in table_chunks[0]
 
 
 def test_parse_pdf_page_without_table_plain_text(monkeypatch):

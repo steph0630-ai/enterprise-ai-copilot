@@ -172,17 +172,36 @@ def parse_pdf(file_path: str) -> list[str]:
 
 
 def _page_to_markdown(page) -> str:
-    """一页 → 文本：无表格页直接 extract_text；有表格页附加 Markdown 表格
-
-    权衡：extract_text() 已含表格打平的文本，再拼 Markdown 会重复一段表格内容。
-    但"列头↔数据对应"比"去重"重要——错乱比冗余更糟（正是这次年报数字错的根因）。
-    """
-    text = page.extract_text() or ""  # extract_text() 对扫描页返回 None，兜底
-    tables = [t for t in (page.extract_tables() or []) if t]
+    """一页 → 正文 + Markdown 表格；表格区域不再从正文重复抽取。"""
+    table_objects = list(page.find_tables()) if hasattr(page, "find_tables") else []
+    if table_objects:
+        tables = [table.extract() for table in table_objects if table.extract()]
+        text = _extract_text_outside_tables(page, [table.bbox for table in table_objects])
+    else:
+        # 兼容测试桩和旧版 pdfplumber：没有 bbox 时保留原行为。
+        text = page.extract_text() or ""
+        tables = [t for t in (page.extract_tables() or []) if t]
     if not tables:
         return text
-    md = "\n\n".join(_table_to_markdown(t) for t in tables)
-    return text + "\n\n[表格]\n" + md
+    md = "\n\n".join(
+        "[表格]\n" + _table_to_markdown(t) + "\n[表格结束]" for t in tables
+    )
+    return text + "\n\n" + md
+
+
+def _extract_text_outside_tables(page, table_bboxes: list[tuple]) -> str:
+    """提取表格外文字，避免 extract_text 与 Markdown 表格重复。"""
+    if not table_bboxes or not hasattr(page, "filter"):
+        return page.extract_text() or ""
+
+    def keep(obj: dict) -> bool:
+        if obj.get("object_type") != "char":
+            return True
+        x = (obj.get("x0", 0) + obj.get("x1", 0)) / 2
+        y = (obj.get("top", 0) + obj.get("bottom", 0)) / 2
+        return not any(x0 <= x <= x1 and top <= y <= bottom for x0, top, x1, bottom in table_bboxes)
+
+    return page.filter(keep).extract_text() or ""
 
 
 def _table_to_markdown(table: list) -> str:
@@ -545,15 +564,23 @@ def split_text(pages_text: list[str], chunk_size: int = 500, chunk_overlap: int 
     # 1. 先把多页合并成一大段
     full_text = "\n".join(pages_text)
 
-    # 2. 用 RecursiveCharacterTextSplitter 切分
+    # 2. 普通正文走 RecursiveCharacterTextSplitter；表格整体保留为独立 chunk，
+    #    避免表头/数据行被 500 字切分器拆开。
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
-
-    # 3. 切分，返回 chunk 列表
-    chunks = splitter.split_text(full_text)
-    return chunks
+    table_pattern = re.compile(r"\[表格\]\n(.*?)\n\[表格结束\]", re.DOTALL)
+    chunks: list[str] = []
+    cursor = 0
+    for match in table_pattern.finditer(full_text):
+        chunks.extend(splitter.split_text(full_text[cursor : match.start()]))
+        table = match.group(1).strip()
+        if table:
+            chunks.append("[表格]\n" + table)
+        cursor = match.end()
+    chunks.extend(splitter.split_text(full_text[cursor:]))
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) -> int:
@@ -592,14 +619,17 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i : i + batch_size]
         ids = [f"doc_{document_id}_chunk_{j}" for j in range(i, i + len(batch))]
-        # Day 23：含图片描述（"[图：" 前缀）的 chunk 打 type=image 标记，
-        # 检索层才能按"这是图"过滤/加权。不含图的不带 type key（向后兼容）。
+        # 给图片和表格 chunk 打类型标记，检索层可以按内容形态过滤/加权。
         metadatas = [
             {
                 "source": filename,
                 "document_id": document_id,
                 "chunk_index": j,
-                **({"type": "image"} if "[图：" in chunk else {}),
+                **(
+                    {"type": "image"}
+                    if "[图：" in chunk
+                    else {"type": "table"} if chunk.startswith("[表格]\n") else {}
+                ),
             }
             for chunk, j in zip(batch, range(i, i + len(batch)))
         ]
