@@ -12,6 +12,7 @@
 """
 
 import json
+import time
 
 from sqlalchemy.orm import Session
 
@@ -188,8 +189,15 @@ class AgentService:
                         yield {"type": "token", "content": fallback}
                 else:
                     yielded_token = True
-                    for part in text_parts:  # 依次吐：前端仍按打字机逐段拼接
-                        yield {"type": "token", "content": part}
+                    # Day 25.4 修打字机：攒住的答案不能"一次全吐"（无流式感），
+                    # 也不能边到边吐（会泄调工具前的草稿）。折中：确认是最终答案后，
+                    # 切成小段、段间小停顿逐帧吐——前端逐段拼接=打字机效果，且不重复。
+                    _TYPING_CHUNK = 6    # 每帧吐几个字（约 200 字/秒的打字节奏）
+                    _TYPING_DELAY = 0.03
+                    text = "".join(text_parts)
+                    for i in range(0, len(text), _TYPING_CHUNK):
+                        yield {"type": "token", "content": text[i:i + _TYPING_CHUNK]}
+                        time.sleep(_TYPING_DELAY)
                 yield {"type": "done", "tools_used": tools_used}
                 return
 

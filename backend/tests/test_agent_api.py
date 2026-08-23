@@ -101,7 +101,7 @@ def test_answer_stream_discards_draft_text(monkeypatch):
 
     assert "草稿" not in full                 # 草稿文字没泄给前端
     assert full.count("11,463.63万元") == 1   # 答案只出现一次，不再重复两遍
-    assert [e["type"] for e in events if e["type"] != "done"].count("token") == 1
+    assert len([e for e in events if e["type"] == "token"]) > 1  # 拆小段吐=打字机节奏
     assert "search_knowledge" in [e.get("name") for e in events if e["type"] == "tool"]
     assert events[-1]["type"] == "done"
 
