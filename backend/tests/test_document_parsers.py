@@ -179,6 +179,27 @@ def test_table_to_markdown_merges_two_header_rows():
     assert "| 合计 | 8,086,021.74 | 1,417,003.17 |" in md
 
 
+def test_table_to_markdown_rejoins_wrapped_number_and_cjk_label():
+    """Day 25.4：PDF 折行修复，数字和中文词都无缝接回：
+    - 中文行标签（发出商\\n品 → 发出商品）：绝不能留空格，否则"发出商品"被拆成两词，
+      和"库存商 品"几乎一样，模型会把"发出商品"答成"库存商品"的数（真实故障）。
+    - 数字（835,160,639.3\\n5 → 835,160,639.35）；两个独立金额仍保留空格不误拼。
+    """
+    tbl = [
+        ["项目", "期末账面余额", "期初账面余额"],
+        ["库存商\n品", "21,336,111.93", "25,207,131.05"],
+        ["发出商\n品", "835,160,639.3\n5", "756,783,572.04"],
+        ["合计", "1,085,434,203.\n26", "963,330,152.83"],
+    ]
+    md = document_service._table_to_markdown(tbl)
+    # 中文折行 → 不留空格，行标签唯一可辨识（发出商品 ≠ 库存商品）
+    assert "库存商品" in md and "发出商品" in md
+    assert "库存商 品" not in md and "发出商 品" not in md
+    # 数字折行 → 无缝接回，不允许空格劈在中间
+    assert "835,160,639.35" in md and "835,160,639.3 5" not in md
+    assert "1,085,434,203.26" in md and "1,085,434,203. 26" not in md
+
+
 def test_parse_pdf_page_with_table_emits_markdown(monkeypatch):
     """含表格页：输出附加 Markdown 表格（列头在，模型能读列）"""
     class FakePage:
@@ -313,6 +334,25 @@ def test_strip_does_not_remove_body_numbers():
     pages = ["项目 金额\n1417003.17"] * 3
     out = document_service._strip_headers_footers(pages)
     assert "1417003.17" in out[0]  # 纯数字行保留，页码正则不匹配它
+
+
+def test_strip_keeps_table_markers():
+    """Day 25.4：[表格]/[表格结束] 在所有页都出现也绝不能当页眉删。
+
+    真实年报几乎全是表格 → [表格] 命中"≥60% 重复短行",一旦被误删,所有表失去
+    "整表一块"保护,split 会把表格当正文按 500 字劈开(库存商品/发出商品分家→答错行)。
+    这里验证:表格标记保留,而真正的页眉(每页重复的公司名)仍被剥掉。
+    """
+    pages = [
+        "XX公司机密\n[表格]\n| 项目 | 金额A |\n[表格结束]\n正文A",
+        "XX公司机密\n[表格]\n| 项目 | 金额B |\n[表格结束]\n正文B",
+        "XX公司机密\n[表格]\n| 项目 | 金额C |\n[表格结束]\n正文C",
+    ]
+    out = document_service._strip_headers_footers(pages)
+    assert all("[表格]" in p for p in out)        # 表格标记保留
+    assert all("[表格结束]" in p for p in out)
+    assert all("| 项目 |" in p for p in out)      # 每页自己的表格行保留（内容不同不算重复）
+    assert all("XX公司机密" not in p for p in out)   # 真页眉仍被剥
 
 
 # ========== parse_document：按扩展名分发（monkeypatch 桩，不碰真实文件） ==========

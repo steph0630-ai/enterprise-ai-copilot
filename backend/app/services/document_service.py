@@ -204,6 +204,45 @@ def _extract_text_outside_tables(page, table_bboxes: list[tuple]) -> str:
     return page.filter(keep).extract_text() or ""
 
 
+def _should_join_without_space(left: str, right: str) -> bool:
+    """相邻两段应无缝拼接（Day 25.4）：数字或中文被 PDF 折行劈开时不能留空格。
+
+    两种情况：
+    ① 数字被折行（835,160,639.35 显示成 835,160,639.3\\n5）→ 接回一个数。
+    ② 中文词被折行（发出商品显示成 发出商\\n品）→ 中文词内本没有空格，
+       若拼成"发出商 品"，"发出商品"被拆成两词，和"库存商 品"几乎一样，
+       模型会认错行（真实故障：问"发出商品"答成"库存商品"的数）。
+    """
+    # ① 数字折行：left 已有小数点、以数字/点结尾，right 是 1~2 位纯数字
+    if "." in left and re.search(r"[0-9.]$", left) and re.fullmatch(r"\d{1,2}", right):
+        return True
+    # ② 中文折行：left 末字和 right 首字都是汉字 → 无空格连上（中文句内无词间空格）
+    if re.search(r"[一-鿿]", left[-1:]) and re.match(r"[一-鿿]", right[:1]):
+        return True
+    return False
+
+
+def _flatten_cell(c) -> str:
+    """一个单元格 → 单行文本（Day 25.4：修 PDF 折行把数字/中文词劈开）
+
+    原来直接 " ".join(str(c).split())：pdfplumber 抽出的单元格里，长金额会被 PDF
+    折行成多行（835,160,639.35 → 835,160,639.3\\n5；发出商品 → 发出商\\n品），
+    压平后换行变空格——数字被劈成"835,160,639.3 5"（读作缺一位），
+    中文词被拆成"发出商 品"（和"库存商 品"几乎一样，模型认错行）。
+    这里按行拼接，只在"数字折行 / 中文折行"处无缝接回，其余换行用单个空格。
+    """
+    text = "" if not c else str(c)
+    lines = [ln.strip() for ln in text.split("\n")]
+    parts = [ln for ln in lines if ln]
+    out = ""
+    for part in parts:
+        if out and _should_join_without_space(out, part):
+            out += part  # 数字 / 中文词被折行劈开 → 无缝接回
+        else:
+            out = f"{out} {part}" if out else part
+    return " ".join(out.split())
+
+
 def _table_to_markdown(table: list) -> str:
     """pdfplumber 抽出的表格（行×列 嵌套 list）→ Markdown 表格
 
@@ -216,7 +255,7 @@ def _table_to_markdown(table: list) -> str:
     for row in table:
         cells = []
         for c in row:
-            cells.append("" if not c else " ".join(str(c).split()))
+            cells.append(_flatten_cell(c))
         rows.append(cells)
     if not rows:
         return ""
@@ -288,6 +327,11 @@ _PAGE_NUM_RE = re.compile(
 )
 # 纯数字/金额/日期样行（数字+标点）：不因"跨页重复"被剥，防误删表格数字
 _NUMERIC_LINE_RE = re.compile(r"^[\d\s.,，()%¥￥$€\-—–]+$")
+# 表格包裹标记（Day 25.4）：页眉页脚剥离绝不能把它当"重复行"删掉。
+# 真实年报几乎全是表格，[表格] 出现在绝大多数页 → 会命中"≥60% 重复短行"。
+# 一旦被删，所有表失去"整表一块"识别，split 会把表格当正文按 500 字劈开，
+# 出现"库存商品、发出商品被劈进两个 chunk、模型答错行"的故障。
+_TABLE_MARKERS = {"[表格]", "[表格结束]"}
 
 
 def _strip_headers_footers(pages: list[str]) -> list[str]:
@@ -310,6 +354,7 @@ def _strip_headers_footers(pages: list[str]) -> list[str]:
         ln for ln, cnt in line_pages.items()
         if cnt >= threshold and len(ln) <= 50
         and not _NUMERIC_LINE_RE.match(ln)  # 纯数字行（表格金额等）不因重复误删
+        and ln not in _TABLE_MARKERS        # 表格标记绝不算页眉页脚（见 Day 25.4）
     }
     for text in pages:
         for line in text.split("\n"):
@@ -583,6 +628,34 @@ def split_text(pages_text: list[str], chunk_size: int = 500, chunk_overlap: int 
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+def split_text_with_pages(
+    pages_text: list[str], chunk_size: int = 500, chunk_overlap: int = 50
+) -> list[tuple[int, str]]:
+    """按页切 chunk，并保留页码，给入库 metadata 用。"""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    chunks: list[tuple[int, str]] = []
+    for page_no, page_text in enumerate(pages_text, start=1):
+        if not (page_text or "").strip():
+            continue
+        table_pattern = re.compile(r"\[表格\]\n(.*?)\n\[表格结束\]", re.DOTALL)
+        cursor = 0
+        for match in table_pattern.finditer(page_text):
+            for chunk in splitter.split_text(page_text[cursor : match.start()]):
+                if chunk.strip():
+                    chunks.append((page_no, chunk))
+            table = match.group(1).strip()
+            if table:
+                chunks.append((page_no, "[表格]\n" + table))
+            cursor = match.end()
+        for chunk in splitter.split_text(page_text[cursor:]):
+            if chunk.strip():
+                chunks.append((page_no, chunk))
+    return chunks
+
+
 def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) -> int:
     """把文档变成可检索的向量（解析 → 切分 → 向量化 → 入库）
 
@@ -608,16 +681,17 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
     if not pages_text or all(not (p or "").strip() for p in pages_text):
         raise ValueError("没有可提取的文字，暂不支持 OCR/扫描件，请上传带文本层的文件")
 
-    # 2. 切块
-    chunks = split_text(pages_text)
+    # 2. 切块（保留页码，财务问答能回到原始页看证据）
+    page_chunks = split_text_with_pages(pages_text)
 
     # 理论兜底（正常会被上面的空检查拦下）：极端情况下 split 出空列表
-    if not chunks:
+    if not page_chunks:
         return 0
 
     # 3. 分批向量化 + 入库
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i : i + batch_size]
+    for i in range(0, len(page_chunks), batch_size):
+        batch = page_chunks[i : i + batch_size]
+        batch_texts = [chunk for _, chunk in batch]
         ids = [f"doc_{document_id}_chunk_{j}" for j in range(i, i + len(batch))]
         # 给图片和表格 chunk 打类型标记，检索层可以按内容形态过滤/加权。
         metadatas = [
@@ -625,26 +699,27 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
                 "source": filename,
                 "document_id": document_id,
                 "chunk_index": j,
+                "page": page_no,
                 **(
                     {"type": "image"}
                     if "[图：" in chunk
                     else {"type": "table"} if chunk.startswith("[表格]\n") else {}
                 ),
             }
-            for chunk, j in zip(batch, range(i, i + len(batch)))
+            for (page_no, chunk), j in zip(batch, range(i, i + len(batch)))
         ]
 
-        embeddings = embedding_service.embed_documents(batch)  # 慢的 API 调用，放锁外
+        embeddings = embedding_service.embed_documents(batch_texts)  # 慢的 API 调用，放锁外
 
         with _ingest_lock:  # 本地快写，串行防撞
             vector_store.add(
                 ids=ids,
                 embeddings=embeddings,
-                documents=batch,
+                documents=batch_texts,
                 metadatas=metadatas,
             )
             # 把 chunk 也记到 MySQL（document_chunks 表），便于追溯
-            for idx, (cid, chunk) in enumerate(zip(ids, batch)):
+            for idx, (cid, (_, chunk)) in enumerate(zip(ids, batch)):
                 db.add(
                     DocumentChunk(
                         document_id=document_id,
@@ -661,7 +736,7 @@ def _ingest(db: Session, document_id: int, filename: str, batch_size: int = 32) 
         "文档 %s：尝试描述 %d 张图，成功 %d，失败跳过 %d",
         filename, img_stats["total"], img_stats["success"], img_stats["failed"],
     )
-    return len(chunks)
+    return len(page_chunks)
 
 
 def ingest_document_job(document_id: int, filename: str) -> None:
