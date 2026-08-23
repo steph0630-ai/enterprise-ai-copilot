@@ -98,6 +98,24 @@ def test_answer_no_forcing_for_meta_query(monkeypatch):
     assert "FastAPI" in res["answer"]
 
 
+def test_system_prompt_finance_unit_rule(monkeypatch):
+    """Agent 提示词要求财务金额保留原文单位，附注明细优先于概览表"""
+    from app.api.v1 import agent as agent_api
+
+    # _build_messages 会走 get_or_create + history（需要真库），这里打桩让它只拼字符串
+    monkeypatch.setattr(agent_api.conversation_service, "get_or_create", lambda *a, **k: None)
+    monkeypatch.setattr(agent_api.conversation_service, "history", lambda *a, **k: [])
+
+    system = agent_api._build_messages(
+        SimpleNamespace(query="其他非流动资产期末余额合计多少", conversation_id=""),
+        SimpleNamespace(id=1, name="张三", employee_no="E100", role="employee", department="销售一部"),
+        db=None,
+    )[0][0]["content"]
+
+    assert "财务金额必须保留原文单位" in system
+    assert "附注/明细表的原始金额" in system
+
+
 def test_is_meta_query():
     """元问题判断：'技术栈/你这个系统' 命中；具体业务问题不命中"""
     assert _is_meta_query("你的技术栈是什么")

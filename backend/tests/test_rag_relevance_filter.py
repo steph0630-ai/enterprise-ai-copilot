@@ -134,6 +134,13 @@ def test_system_prompt_conflict_rule():
     assert "分别列出各来源的说法" in SYSTEM_PROMPT
 
 
+def test_system_prompt_finance_unit_rule():
+    """RAG 提示词要求保留财务金额原文单位，且附注明细优先于概览表"""
+    assert "保留原文单位" in SYSTEM_PROMPT
+    assert "原文是万元就写万元" in SYSTEM_PROMPT
+    assert "附注/明细表" in SYSTEM_PROMPT
+
+
 def test_agent_prompt_conflict_rule(monkeypatch):
     """Agent 的 system prompt 也有冲突规则（两条链路都要约束，防模型悄悄二选一）"""
     from app.api.v1 import agent as agent_api

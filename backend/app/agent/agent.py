@@ -121,7 +121,7 @@ class AgentService:
         for _ in range(max_rounds):
             stream = self.llm.complete_stream(messages, tools=build_tools(user))
 
-            text_parts: list[str] = []   # 本轮的纯文字（模型回答前可能先说一句"我来查"）
+            text_parts: list[str] = []   # 本轮的文字（可能是模型先写的"草稿"，不立即吐）
             tool_calls: list[dict] = []  # 累计出来的工具调用
             finish_reason = None         # 最后一个 chunk 的结束原因（兜底用）
 
@@ -130,11 +130,11 @@ class AgentService:
                 delta = choice.delta
                 finish_reason = choice.finish_reason
 
-                # 1. 模型吐了文字 → 原样转给前端
+                # 1. 模型吐了文字 → 先攒着，不立即转发（Day 25.4）。
+                #    模型常"先写一段草稿再调工具"，若边到边吐，草稿会把前端答案
+                #    和正式答案拼成两份。攒住，等这轮确认不调工具才吐。
                 if delta.content:
                     text_parts.append(delta.content)
-                    yielded_token = True
-                    yield {"type": "token", "content": delta.content}
 
                 # 2. 工具调用是"零散拼装"来的：同一个 index 是同一个调用，
                 #    名字/参数可能分几个 chunk 到，arguments 要一段段拼起来。
@@ -159,7 +159,9 @@ class AgentService:
                 msg = self.llm.complete(messages, tools=TOOLS)
                 tool_calls = [c.model_dump() for c in msg.tool_calls or []]
 
-            # 4. 这一轮没要工具 → 先过"幻觉兜底"（同 answer），再收工
+            # 4. 这一轮没要工具 → 先过"幻觉兜底"（同 answer），再吐答案收工。
+            #    Day 25.4：现在才把攒的字吐出去——草稿轮（调了工具）的字被丢掉，
+            #    只有这一轮"确实没调工具"的文字才到前端，答案只出现一次。
             if not tool_calls:
                 current_query = (
                     messages[-1]["content"]
@@ -178,17 +180,21 @@ class AgentService:
                             f"参考资料：\n{_force_retrieve(current_query)}"
                         ),
                     })
-                    continue  # 带着资料重新问
-                # Day 18 防御：一个字没吐（上游偶发空流）→ 非流式兜底，别让前端看到空答案
-                if not yielded_token:
+                    continue  # 带着资料重新问（这轮的草稿不要了）
+                if not text_parts:  # Day 18 防御：一个字没吐（上游偶发空流）→ 非流式兜底
                     fallback = self._fallback_answer(messages)
                     if fallback:
+                        yielded_token = True
                         yield {"type": "token", "content": fallback}
+                else:
+                    yielded_token = True
+                    for part in text_parts:  # 依次吐：前端仍按打字机逐段拼接
+                        yield {"type": "token", "content": part}
                 yield {"type": "done", "tools_used": tools_used}
                 return
 
-            # 5. 要工具 → 把模型这句"带 tool_calls"的话原样加回历史（缺了它模型对不上号），
-            #    逐个执行工具，结果回传，回到循环顶再问一次
+            # 5. 这轮要工具 → 草稿文字只进历史（不给用户），把带 tool_calls 的话
+            #    原样加回历史（缺了它模型对不上号），逐个执行工具，结果回传。
             messages.append(
                 {
                     "role": "assistant",
