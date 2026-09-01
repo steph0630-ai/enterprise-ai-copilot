@@ -5,8 +5,6 @@ from pathlib import Path
 
 import chromadb
 
-from app.services.keyword import keyword_index  # Day 25：语料变了让 BM25 索引置脏
-
 # Chroma 数据落盘目录（和上传文件一样放 storage 下——是数据，不是代码）
 # 支持环境变量覆盖：pytest 测试时把向量库指到临时目录，避免锁冲突/污染真实数据
 _default_chroma = Path(__file__).resolve().parent.parent / "storage" / "chroma"
@@ -48,7 +46,6 @@ class VectorStore:
             documents=documents,
             metadatas=metadatas,
         )
-        keyword_index.invalidate()  # Day 25：语料变了，BM25 下次重排前要重建
 
     def delete_by_document(self, document_id: int) -> None:
         """删除某个文档的全部向量（Day 14：文档管理）
@@ -57,7 +54,6 @@ class VectorStore:
         {"document_id": ...}，这里按它精确匹配，把该文档的向量一次清空。
         """
         self.collection.delete(where={"document_id": document_id})
-        keyword_index.invalidate()  # Day 25：语料变了，BM25 下次重排前要重建
 
     def search(
         self, query_embedding: list[float], k: int = 3, where: dict | None = None
