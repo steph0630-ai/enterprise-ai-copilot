@@ -484,6 +484,48 @@ def extract_pdf_images(file_path) -> list[tuple[int, bytes, str]]:
     return images
 
 
+# Day 26：稀疏文本页的"整页兜底"。
+# 背景：部分图文混排 PDF（如快速指南），规格块的中文标签（充电接口、充电盒型号…）
+# 进不了 pdfplumber 文本层（实测第 6 页整页 0 个 CJK 字符），只剩裸值 "USB : USB-C"；
+# 而这类规格块又不算 page.images（是排版/矢量画的，不是嵌入图）→ 现有抠图全漏。
+# 兜底：一页抽出的文本异常短（< SPARSE_PAGE_CHARS），很可能被图形/编码坑了，
+# 就把整页渲染成图交给 VL，把"充电接口=USB-C"这类标签配值救回来。
+# 成本：每页这样稀疏就多一次 VL 调用（一张文档通常只几页稀疏），受 VISION_MAX_IMAGES 上限约束。
+SPARSE_PAGE_CHARS = 200
+
+
+def _extract_sparse_page_images(file_path, pages_text: list[str]) -> list[tuple[int, bytes, str]]:
+    """稀疏文本页 → 整页渲染成 PNG 交给 VL，返回 [(页索引, PNG 字节, mime), ...]
+
+    pages_text 是 parse_pdf 产物（每页一字符串，长度和 pdf.pages 对齐，已剥页眉/页脚）。
+    所有页都够稠密则返回空列表，零开销。打不开文件 / 渲染失败都降级跳过，
+    不拖垮入库（同 Day 21 增强层"失败静默降级"原则）。
+    """
+    sparse: list[tuple[int, bytes, str]] = []
+    try:
+        pdf = pdfplumber.open(file_path)
+    except Exception as e:
+        logger.warning("稀疏页整页渲染：打开 %s 失败（跳过）：%s", file_path, e)
+        return []
+    with pdf:
+        for idx, page in enumerate(pdf.pages):
+            text = (pages_text[idx] if idx < len(pages_text) else "") or ""
+            # 只在"有点文本但异常短"的页兜底：0 字纯空白页跳过（VL 对空白页可能
+            # 幻觉出内容；真有内容的空白页是图，走 extract_pdf_images 那条），
+            # 稠密文本页跳过（不需要 VL，省调用）。
+            if not 0 < len(text.strip()) < SPARSE_PAGE_CHARS:
+                continue
+            try:
+                rendered = page.to_image(resolution=150).original
+            except Exception as e:
+                logger.warning("稀疏页整页渲染失败（跳过）：%s", e)
+                continue
+            buf = io.BytesIO()
+            rendered.save(buf, format="PNG")
+            sparse.append((idx, buf.getvalue(), "image/png"))
+    return sparse
+
+
 def extract_docx_images(file_path) -> list[tuple[int, bytes, str]]:
     """从 .docx 抠出值得描述的图片，返回 [(块索引, 图片字节, mime), ...]
 
@@ -537,6 +579,8 @@ def enrich_pages_with_images(filename: str, pages_text: list[str]) -> tuple[list
     ext = get_extension(filename)
     if ext == ".pdf":
         images = extract_pdf_images(STORAGE_DIR / filename)
+        # Day 26：稀疏文本页（图多/编码坑丢了标签）整页兜底，别漏掉规格块
+        images += _extract_sparse_page_images(STORAGE_DIR / filename, pages_text)
     elif ext == ".docx":
         images = extract_docx_images(STORAGE_DIR / filename)
     else:

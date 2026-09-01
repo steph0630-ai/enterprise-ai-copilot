@@ -38,19 +38,9 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "用户的问题或想检索的内容"},
-                    # Day 22：教模型按问题类型选 top_k——列举/概括类问题召回要够全
-                    # Day 25.x：别再教模型用 3——单点事实的答案片段常排 top-3 之外，
-                    #          用 3 会把答案漏出上下文。两类都给 8~10，别用 1~3 这种过小值。
-                    "top_k": {
-                        "type": "integer",
-                        "description": (
-                            "返回的最相关片段数，默认为一个足够大的值。别用 1~3 这种过小的值，"
-                            "答案片段有时排在较后位置，容易漏掉正确答案。"
-                            "列举/概括类问题（如\"有哪些工具\"\"列出所有流程\"）"
-                            "建议 8~10；找具体数值、日期、人名等具体事实类问题"
-                            "（如\"报销限额是多少\"）也建议 8~10，确保答案被召回再回答。"
-                        ),
-                    },
+                    # Day 26：top_k 不交给模型——模型会低估召回数漏答案（"充电接口"传 3，
+                    # 答案chunk 排第 4 就被挤出上下文），而 Day 22 已验证"教模型选 top_k"
+                    # 不可靠。改由后端 _infer_top_k 单点裁决，说明书不再给该参数。
                 },
                 "required": ["query"],
             },
@@ -138,13 +128,14 @@ def _infer_top_k(query: str) -> int:
 def _search_knowledge(query: str, top_k: int | None = None) -> dict:
     """知识类工具：复用 Day 6 的完整 RAG（检索 + 生成 + 出处）
 
-    默认值 None 而不是 3（Day 22）：这样才能区分"模型没传"（→ 推断）
-    和"模型特意传了 3"（具体事实类问题，精确优先，尊重它）。
-    最后 clamp 1~10——Agent 链路是唯一没夹紧 top_k 的地方，模型可能传 100000。
+    Day 26 改为"后端单点裁决 top_k"：模型传 top_k 会低估召回数漏答案
+    （"充电盒充电接口"模型传 3，而答案chunk 排第 4 就被挤出上下文），
+    且 Day 22 已验证"教模型选 top_k"不可靠。所以无视模型传的任何值，
+    一律按问题类型 _infer_top_k 裁决。工具说明书已删掉 top_k 参数，模型不再传；
+    这里忽略形参只是防御（防旧调用/测试直接传值）。clamp 1~10 保留——
+    防极端值打爆上下文。
     """
-    if top_k is None or top_k <= 0:
-        top_k = _infer_top_k(query)
-    top_k = min(max(top_k, 1), 10)
+    top_k = min(max(_infer_top_k(query), 1), 10)
     result = rag_service.answer(query, k=top_k)
     return {"answer": result["answer"], "sources": result["sources"]}
 

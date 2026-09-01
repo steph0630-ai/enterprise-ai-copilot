@@ -60,24 +60,27 @@ def test_search_knowledge_no_top_k_infers_factual(monkeypatch):
     assert captured["k"] == 8
 
 
-def test_search_knowledge_model_top_k_passthrough(monkeypatch):
-    """模型特意传了 top_k=5 → 尊重它，不推断"""
+def test_search_knowledge_ignores_model_top_k(monkeypatch):
+    """Day 26：模型传 top_k=5 也被忽略 → 后端按类型裁决（报销限额→8）。
+
+    模型会低估召回数漏答案（答案chunk 常见 #4~#8），后端单点裁决，模型传值不算数。
+    """
     captured = {}
     monkeypatch.setattr(tools.rag_service, "answer", make_fake_answer(captured))
     tools._search_knowledge("报销限额是多少", top_k=5)
-    assert captured["k"] == 5
+    assert captured["k"] == 8
 
 
-def test_search_knowledge_clamps_upper(monkeypatch):
-    """模型传 100 → clamp 到 10（防打爆上下文）"""
+def test_search_knowledge_ignores_huge_top_k(monkeypatch):
+    """Day 26：模型传 100 也被忽略 → 后端裁决（报销限额→8），不再"尊重模型值只 clamp 到 10" """
     captured = {}
     monkeypatch.setattr(tools.rag_service, "answer", make_fake_answer(captured))
     tools._search_knowledge("报销限额是多少", top_k=100)
-    assert captured["k"] == 10
+    assert captured["k"] == 8
 
 
-def test_search_knowledge_clamps_lower(monkeypatch):
-    """模型传 -5（非法）→ 按问题类型推断兜底（列举→10）"""
+def test_search_knowledge_ignores_illegal_top_k(monkeypatch):
+    """Day 26：传 -5 同样被忽略 → 后端裁决（列举→10），和"非法值走推断"殊途同归"""
     captured = {}
     monkeypatch.setattr(tools.rag_service, "answer", make_fake_answer(captured))
     tools._search_knowledge("这个教程讲了哪几个工具", top_k=-5)
@@ -86,11 +89,9 @@ def test_search_knowledge_clamps_lower(monkeypatch):
 
 # ========== 工具说明书文案：防止 top_k 引导回退 ==========
 
-def test_build_tools_top_k_description_guidance():
-    """说明书应教模型：列举/概括和具体事实类都给 8~10，且不许再教"用 3 即可"（Day 25.x）"""
-    desc = (
-        tools.build_tools()[0]["function"]["parameters"]["properties"]["top_k"]["description"]
-    )
-    assert "8~10" in desc
-    assert "具体事实类" in desc
-    assert "用 3 即可" not in desc  # 事实类答案常排 top-3 之外，别再把模型往 3 上带
+def test_build_tools_top_k_removed():
+    """Day 26：top_k 不交给模型——说明书参数里没有它，也不教模型选 top_k（后端裁决）"""
+    fn = tools.build_tools()[0]["function"]
+    assert "top_k" not in fn["parameters"]["properties"]
+    assert "top_k" not in fn["description"]
+    assert "8~10" not in fn["description"]  # 不再教模型给某个区间，后端说了算
