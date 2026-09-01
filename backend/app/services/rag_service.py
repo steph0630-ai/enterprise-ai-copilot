@@ -31,7 +31,13 @@ SYSTEM_PROMPT = (
 # 明显不相关，直接丢弃——不进来，context 更纯、答案更准、来源更干净。
 # 为什么用相对倍数而不是绝对阈值：L2 距离没有固定范围，绝对阈值没法预设；
 # 相对倍数自适应（最相关的越近，过滤越严；整体都远就都保留），且测试可 mock。
-_RELEVANCE_FACTOR = 2.0
+#
+# Day 26 修正 2.0 → 2.5：实测"HUAWEI FreeBuds SE 2充电盒充电接口"这类查询，
+# 最近的一块往往是只有几个字的"产品标题"（如 "HUAWEI FreeBuds SE 2"，dist≈0.5），
+# 它天然很近当作锚点，把**真正写答案的规格块（dist≈1.05，约 2.1×）**当噪音删了，
+# 导致模型答"知识库中没有"。放宽到 2.5：2.1× 的合法答案保留；Day 24.5 那种
+# 3.0× 的无关噪音照样删（测试 test_filter_drops_distant_chunk 仍通过）。
+_RELEVANCE_FACTOR = 2.5
 
 
 class RagService:

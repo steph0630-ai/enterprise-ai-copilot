@@ -65,6 +65,34 @@ def test_filter_keeps_related_enum_chunks(monkeypatch):
     assert len(res["sources"]) == 2
 
 
+def test_filter_keeps_slightly_distant_answer(monkeypatch):
+    """真实答案在 '最近距离 × 2.1' 这类程度 → 要保留（Day 26）
+
+    回归：'HUAWEI FreeBuds SE 2充电盒充电接口' 这类查询，最近一块是仅几个字的
+    产品标题（dist≈0.5），答案规格块在 dist≈1.05（约 2.1×）。若过滤因子过严（2.0）
+    会把答案块当噪音删掉，模型答'知识库中没有'。宽松到 2.5 后 2.1× 应保留。
+    """
+    captured = {}
+    monkeypatch.setattr(
+        rag_service.retrieval, "search",
+        lambda q, k=3: [
+            {"text": "HUAWEI FreeBuds SE 2", "source": "a.pdf", "distance": 0.5},
+            {"text": "USB : USB-C 充电接口", "source": "b.pdf", "distance": 1.05},  # 2.1×
+            {"text": "客户服务电话 412-8848", "source": "c.pdf", "distance": 2.0},
+        ],
+    )
+
+    def fake_chat(system, context, question):
+        captured["context"] = context
+        return "答案"
+
+    monkeypatch.setattr(rag_service.llm, "chat", fake_chat)
+
+    rag_service.answer("充电接口是什么类型", k=3)
+    assert "USB-C" in captured["context"], "2.1× 的答案块不应被过滤删掉"
+    assert "412-8848" not in captured["context"], "4× 的无关噪音仍应被删（过滤没失效）"
+
+
 def test_filter_keeps_at_least_one(monkeypatch):
     """全部超阈值（极端）→ 保底留最近的第 1 个，不退回"知识库中没有相关内容" """
     captured = {}
