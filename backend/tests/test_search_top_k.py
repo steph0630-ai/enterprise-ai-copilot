@@ -4,8 +4,11 @@
   1. 列举/概括型问题召回不全（问工具列表只答 3/17 个）
   2. 宽泛问题下图描述 chunk（只占文本流 3.5%）被挤出前 3
 
-改造：模型没传 top_k 时，后端按问题关键词推断（列举/概括→10，事实→3），
+改造：模型没传 top_k 时，后端按问题关键词推断（列举/概括→10，事实→8），
 并 clamp 1~10（Agent 链路是唯一没夹紧 top_k 的地方，模型可能传 100000）。
+
+Day 25.x 追加：具体事实类从 3 提到 8。实测单文档基准发现事实类答案片段
+常排 top-3 之外（第 4~6 位），默认 3 会把答案漏出模型上下文。
 """
 
 import app.agent.tools as tools
@@ -26,9 +29,9 @@ def test_infer_top_k_enumeration():
 
 
 def test_infer_top_k_factual():
-    """具体事实类问题 → 3，精确优先"""
+    """单点事实类（数值/日期/人名）→ 8：答案片段常排 top-3 之外，默认 3 会漏（Day 25.x）"""
     for q in ["报销限额是多少", "报销流程是什么", "请假需要几天审批"]:
-        assert tools._infer_top_k(q) == 3, q
+        assert tools._infer_top_k(q) == 8, q
 
 
 # ========== _search_knowledge：k 怎么落到 RAG 层 ==========
@@ -50,11 +53,11 @@ def test_search_knowledge_no_top_k_infers(monkeypatch):
 
 
 def test_search_knowledge_no_top_k_infers_factual(monkeypatch):
-    """模型没传 top_k → 事实类问题推断为 3"""
+    """模型没传 top_k → 单点事实类推断为 8（Day 25.x：答案常排 top-3 之外）"""
     captured = {}
     monkeypatch.setattr(tools.rag_service, "answer", make_fake_answer(captured))
     tools._search_knowledge("报销限额是多少")
-    assert captured["k"] == 3
+    assert captured["k"] == 8
 
 
 def test_search_knowledge_model_top_k_passthrough(monkeypatch):
@@ -84,9 +87,10 @@ def test_search_knowledge_clamps_lower(monkeypatch):
 # ========== 工具说明书文案：防止 top_k 引导回退 ==========
 
 def test_build_tools_top_k_description_guidance():
-    """说明书应教模型按问题类型选 top_k（列举→8~10，事实→3）"""
+    """说明书应教模型：列举/概括和具体事实类都给 8~10，且不许再教"用 3 即可"（Day 25.x）"""
     desc = (
         tools.build_tools()[0]["function"]["parameters"]["properties"]["top_k"]["description"]
     )
     assert "8~10" in desc
     assert "具体事实类" in desc
+    assert "用 3 即可" not in desc  # 事实类答案常排 top-3 之外，别再把模型往 3 上带

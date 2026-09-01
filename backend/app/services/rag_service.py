@@ -78,13 +78,16 @@ class RagService:
     def _filter_relevant(chunks: list[dict]) -> list[dict]:
         """丢弃"明显不相关"的召回片段，保底至少留 1 个（Day 24.5）
 
-        chunks 已按距离升序（最近在前，store.search 保持 Chroma 顺序）。
         超过"最近距离 × _RELEVANCE_FACTOR"的视为噪音丢弃；全被丢弃时保底留第 1 个，
         避免"过滤后空 context"让回答退化成"知识库中没有相关内容"。
+
+        Day 25：锚点从 chunks[0] 改为"所有片段的最小距离"——因为 hybrid 重排后
+        顺序不再按距离升序（BM25 会把精确词条 chunk 拉高），chunks[0] 未必是最近。
+        锚定真正最近的，才不会把"BM25 上浮的、向量距离略大的正确 chunk"误杀。
         """
         if not chunks:
             return chunks
-        threshold = chunks[0]["distance"] * _RELEVANCE_FACTOR
+        threshold = min(c["distance"] for c in chunks) * _RELEVANCE_FACTOR
         kept = [c for c in chunks if c["distance"] <= threshold]
         return kept or chunks[:1]
 
