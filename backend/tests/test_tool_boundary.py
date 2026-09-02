@@ -29,7 +29,8 @@ def test_query_data_limited_to_db_tables():
     assert "search_knowledge" in desc
 
 
-def test_query_data_still_says_orders():
-    """数据工具的靶子仍是 orders 表（权限/描述旧断言不破）"""
+def test_query_data_schema_is_dynamic_placeholder():
+    """数据工具描述不再写死 orders 结构，用 __SCHEMA__ 占位（build_tools 时注入真实 schema，Day 26）"""
     desc = _tool_desc("query_data")
-    assert "orders" in desc
+    assert "__SCHEMA__" in desc
+    assert "orders 表结构" not in desc  # 不再写死单表结构

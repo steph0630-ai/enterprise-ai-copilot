@@ -13,6 +13,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps import ADMIN_ROLES  # 管理端角色集合（单一来源，别再漏放行）
+from app.core.config import settings  # NL2SQL 授权表清单（Day 26 通用化）
+from app.services.nl2sql_schema import get_schema_text  # 运行时读真实表结构（Day 26）
 from app.services.rag_service import rag_service
 
 
@@ -51,20 +53,19 @@ TOOLS = [
         "function": {
             "name": "query_data",
             "description": (
-                "根据用户的问题，针对 orders 表生成一条 SELECT 语句并执行，返回查询结果。"
+                "根据用户的问题，针对系统配置的业务表生成一条 SELECT 语句并执行，返回查询结果。"
                 "当用户询问订单数量、金额等数据类问题时使用。\n"
                 # Day 25.1：工具边界——query_data 只能查系统数据库的业务表。
                 # 用户上传的知识库文档（如年报、制度）里的数据不在数据库里，
                 # 别用本工具，否则查到"知识库中没有"就错了。
-                "注意：本工具只能查询系统数据库中的业务表（orders）。"
+                # Day 26：具体表结构不再写死——__SCHEMA__ 占位在 build_tools 被真实 schema 替换。
+                "注意：本工具只能查询系统数据库中的业务表（见下）。"
                 "用户上传的知识库文档（如年报、制度）里的数据不在数据库里，"
                 "不要用本工具，请改用 search_knowledge。\n"
-                "orders 表结构：\n"
-                "- id: INTEGER，主键\n"
-                "- department: VARCHAR(50)，部门名称，如 销售一部、销售二部、市场部\n"
-                "- amount: DECIMAL(10,2)，订单金额\n"
-                "- created_at: DATETIME，下单时间（示例数据都是 2026 年 8 月）\n"
-                "规则：只允许生成 SELECT 语句，禁止 DELETE/UPDATE/INSERT/DROP；只允许一条语句。"
+                "可查询的业务表结构（模型需按此生成 SQL）：\n"
+                "__SCHEMA__"
+                "规则：只允许生成 SELECT 语句，禁止 DELETE/UPDATE/INSERT/DROP；"
+                "只允许一条语句；最多返回 20 行。"
             ),
             "parameters": {
                 "type": "object",
@@ -79,12 +80,19 @@ TOOLS = [
 
 
 def build_tools(user=None) -> list[dict]:
-    """给模型的工具说明书：非管理员时，把"只能查本部门"写进 query_data 描述（Day 12）
+    """给模型的工具说明书：动态注入真实表结构 + 部门权限（Day 12/26）
 
-    模型看不见代码，只看 description。要让模型遵守部门权限，
-    就得在说明书写清楚当前用户属于哪个部门、SQL 必须带上部门条件。
+    模型看不见代码，只看 description。Day 26 通用化：把 TOOLS 里的占位 __SCHEMA__
+    替换为运行时读到的授权表真实结构（nl2sql_schema.get_schema_text，有缓存）。
+    加/换表只改配置不改代码。部门权限注入照旧（逻辑不变）。
     """
     tools = copy.deepcopy(TOOLS)  # 每次复制一份，别污染全局的 TOOLS
+    # Day 26：替换占位为真实 schema（同一配置只读一次库，之后走缓存）
+    for t in tools:
+        if t["function"]["name"] == "query_data":
+            t["function"]["description"] = t["function"]["description"].replace(
+                "__SCHEMA__", get_schema_text() + "\n"
+            )
     # 管理端（admin / super_admin）不受部门限制，不写权限描述
     # （Day 17 修：原来只认 admin，super_admin 被当成普通员工）
     if user and user.role not in ADMIN_ROLES and user.department:
@@ -186,20 +194,21 @@ def _json_safe(value):
 
 
 def _validate_query_scope(sql: str) -> str | None:
-    """限制数据工具只能读取 orders，避免 SELECT 变成任意表读取器。"""
+    """限制数据工具只能读取系统配置的业务表（NL2SQL_ALLOWED_TABLES），别变成任意表读取器。"""
     lower = sql.lower()
     if re.search(r"--|/\*|\*/|#", sql):
         return "SQL 不允许包含注释"
     if re.search(r"\b(?:union|with|into|outfile|load_file)\b", lower):
         return "SQL 包含不允许的查询结构"
     if len(re.findall(r"\bselect\b", lower)) != 1:
-        return "只允许查询 orders 表且不允许子查询"
+        return "只允许查询业务表且不允许子查询"
     if re.search(r"\bfrom\b[^;]*(?:,|\bjoin\b)", lower):
-        return "只允许查询 orders 表，不允许 JOIN 或多表查询"
+        return "只允许查询业务表，不允许 JOIN 或多表查询"
 
     tables = re.findall(r"\bfrom\s+([`a-zA-Z_][\w$]*(?:\.[`a-zA-Z_][\w$]*)?)", lower)
-    if len(tables) != 1 or tables[0].strip("`") != "orders":
-        return "只允许查询 orders 表"
+    allowed = set(settings.NL2SQL_ALLOWED_TABLES)
+    if len(tables) != 1 or tables[0].strip("`") not in allowed:
+        return "只允许查询系统配置的业务表"
     return None
 
 

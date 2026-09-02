@@ -58,5 +58,21 @@ class Settings(BaseSettings):
     # 每文档最多让模型看几张图：防 100 张图的 PPT 批量上传打爆 API 账单，超出的跳过
     VISION_MAX_IMAGES: int = 20
 
+    # Day 26：NL2SQL 允许查询的业务表白名单（通用化——加/换表只改这里，不改代码）。
+    # 模型能"看清"清单里每张表的真实结构（运行时读库注入），但只能碰这张清单上的表；
+    # users 等敏感表绝不加入。pydantic-settings 会从 .env 里的 JSON/逗号串自动解析成 list。
+    NL2SQL_ALLOWED_TABLES: list[str] = ["orders"]
+
+    # Day 26：字段语义注释——模型生成 SQL 时能看懂列的业务含义（不只"列名+类型"）。
+    # 背景：动态 schema 只给列名类型时模型靠猜（如把"SP州"硬拼进 department）。这里按表给字段注释,
+    # 注入工具描述。真实库若有列注释可从这里读；config 是补充/覆盖（含中文需 JSON 环境变量覆盖）。
+    NL2SQL_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
+        "orders": {
+            "department": "客户州代码(如 SP/RJ/MG)",
+            "amount": "订单金额(元)",
+            "created_at": "下单时间(YYYY-MM-DD HH:MM:SS)",
+        },
+    }
+
 
 settings = Settings()

@@ -99,7 +99,7 @@ def test_query_data_cannot_read_users_table(db_session):
         make_user("employee", "销售一部"),
     )
     assert "error" in res
-    assert "orders" in res["error"]
+    assert "业务表" in res["error"]
 
 
 def test_query_data_rejects_subquery_outside_orders(db_session):
@@ -111,4 +111,4 @@ def test_query_data_rejects_subquery_outside_orders(db_session):
         make_user("employee", "销售一部"),
     )
     assert "error" in res
-    assert "orders" in res["error"]
+    assert "业务表" in res["error"]
