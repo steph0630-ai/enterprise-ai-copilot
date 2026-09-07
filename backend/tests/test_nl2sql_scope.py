@@ -24,6 +24,16 @@ def test_scope_allows_configured_tables(monkeypatch):
     assert _validate_query_scope("SELECT name FROM products") is None
 
 
+def test_scope_can_use_employee_scoped_table():
+    assert (
+        _validate_query_scope(
+            "SELECT SUM(amount) FROM scoped_orders", {"scoped_orders"}
+        )
+        is None
+    )
+    assert _validate_query_scope("SELECT SUM(amount) FROM orders", {"scoped_orders"})
+
+
 def test_scope_rejects_non_whitelisted(monkeypatch):
     """非白名单表(users)被拒——敏感表绝不入列"""
     monkeypatch.setattr(tools.settings, "NL2SQL_ALLOWED_TABLES", ["orders"])

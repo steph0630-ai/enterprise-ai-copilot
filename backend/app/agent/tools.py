@@ -18,6 +18,10 @@ from app.services.nl2sql_schema import get_schema_text  # 运行时读真实表�
 from app.services.rag_service import rag_service
 
 
+_EMPLOYEE_SOURCE_TABLE = "orders"
+_EMPLOYEE_SCOPED_TABLE = "scoped_orders"
+
+
 # ========== 工具说明书（模型只能看到这个） ==========
 
 TOOLS = [
@@ -80,27 +84,37 @@ TOOLS = [
 
 
 def build_tools(user=None) -> list[dict]:
-    """给模型的工具说明书：动态注入真实表结构 + 部门权限（Day 12/26）
+    """给模型的工具说明书：动态注入真实表结构 + 部门数据边界。
 
     模型看不见代码，只看 description。Day 26 通用化：把 TOOLS 里的占位 __SCHEMA__
     替换为运行时读到的授权表真实结构（nl2sql_schema.get_schema_text，有缓存）。
-    加/换表只改配置不改代码。部门权限注入照旧（逻辑不变）。
+    普通员工只看见 scoped_orders；后端执行时再把它绑定到当前用户部门。
     """
     tools = copy.deepcopy(TOOLS)  # 每次复制一份，别污染全局的 TOOLS
+    schema = get_schema_text()
+    is_employee = user and user.role not in ADMIN_ROLES
+    if is_employee:
+        # 员工只暴露 orders 的结构，并改成不可绕过的逻辑表名 scoped_orders。
+        source_prefix = f"表 {_EMPLOYEE_SOURCE_TABLE}("
+        source_schema = next(
+            (line for line in schema.splitlines() if line.startswith(source_prefix)),
+            f"表 {_EMPLOYEE_SOURCE_TABLE}(读取失败)",
+        )
+        schema = source_schema.replace(
+            source_prefix, f"表 {_EMPLOYEE_SCOPED_TABLE}(", 1
+        )
+
     # Day 26：替换占位为真实 schema（同一配置只读一次库，之后走缓存）
     for t in tools:
         if t["function"]["name"] == "query_data":
             t["function"]["description"] = t["function"]["description"].replace(
-                "__SCHEMA__", get_schema_text() + "\n"
+                "__SCHEMA__", schema + "\n"
             )
-    # 管理端（admin / super_admin）不受部门限制，不写权限描述
-    # （Day 17 修：原来只认 admin，super_admin 被当成普通员工）
-    if user and user.role not in ADMIN_ROLES and user.department:
-        for t in tools:
-            if t["function"]["name"] == "query_data":
+            if is_employee:
                 t["function"]["description"] += (
-                    f"\n权限：当前用户属于「{user.department}」，只能查询本部门的数据，"
-                    f"生成的 SQL 必须包含 department='{user.department}' 条件。"
+                    f"\n权限：只能查询 {_EMPLOYEE_SCOPED_TABLE}，禁止直接查询"
+                    f" {_EMPLOYEE_SOURCE_TABLE}。该逻辑表已由后端限制为当前用户部门，"
+                    "SQL 不需要也不能自行实现部门权限。"
                 )
     return tools
 
@@ -193,7 +207,9 @@ def _json_safe(value):
     return value
 
 
-def _validate_query_scope(sql: str) -> str | None:
+def _validate_query_scope(
+    sql: str, allowed_tables: set[str] | None = None
+) -> str | None:
     """限制数据工具只能读取系统配置的业务表（NL2SQL_ALLOWED_TABLES），别变成任意表读取器。"""
     lower = sql.lower()
     if re.search(r"--|/\*|\*/|#", sql):
@@ -206,7 +222,7 @@ def _validate_query_scope(sql: str) -> str | None:
         return "只允许查询业务表，不允许 JOIN 或多表查询"
 
     tables = re.findall(r"\bfrom\s+([`a-zA-Z_][\w$]*(?:\.[`a-zA-Z_][\w$]*)?)", lower)
-    allowed = set(settings.NL2SQL_ALLOWED_TABLES)
+    allowed = allowed_tables or set(settings.NL2SQL_ALLOWED_TABLES)
     if len(tables) != 1 or tables[0].strip("`") not in allowed:
         return "只允许查询系统配置的业务表"
     return None
@@ -219,8 +235,7 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
       1. 只允许 SELECT（防止模型把表删了/改了）
       2. 只允许单条语句（去掉结尾分号后，再出现分号 = 多条，拒绝）
       3. 最多返回 20 行（防止把整张表倒进上下文，token 爆炸）
-      4. 部门权限（非管理员）：SQL 必须包含本部门条件，否则拒绝
-         —— 拒绝后错误会回传给模型，它自己改写 SQL 再试（错误自愈）
+      4. 部门权限（非管理员）：只能查询后端按当前部门构造的 scoped_orders
     """
     cleaned = sql.strip()
     # 去掉结尾分号后，再出现分号就是多条语句
@@ -230,24 +245,29 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
     if ";" in body:
         return {"error": "只允许单条 SQL 语句"}
 
-    scope_error = _validate_query_scope(body)
+    is_employee = user and user.role not in ADMIN_ROLES
+    if is_employee and not user.department:
+        return {"error": "账号尚未分配部门，请联系管理员"}
+
+    allowed_tables = {_EMPLOYEE_SCOPED_TABLE} if is_employee else None
+    scope_error = _validate_query_scope(body, allowed_tables)
     if scope_error:
         return {"error": scope_error}
 
-    # 部门权限：非管理端必须查自己部门。生产上用只读账号 + 数据库视图/RLS，
-    # 这里用"SQL 里必须有本部门字样"做第 4 道防线，简单且能演示错误自愈。
-    # Day 17 修：管理端（admin/super_admin）跳过，否则 E001 会被告知"只能查部门(None)"
-    if user and user.role not in ADMIN_ROLES:
-        if not (user.department and user.department in body):
-            return {
-                "error": (
-                    f"权限不足：你只能查询本部门（{user.department}）的数据，"
-                    f"请改写 SQL，加上 department='{user.department}' 的 WHERE 条件"
-                )
-            }
+    params = None
+    executable_sql = body
+    if is_employee:
+        # 权限条件完全由服务器生成和绑定；模型 SQL 只能在过滤后的 CTE 上继续查询。
+        executable_sql = (
+            f"WITH {_EMPLOYEE_SCOPED_TABLE} AS ("
+            f"SELECT * FROM {_EMPLOYEE_SOURCE_TABLE} "
+            "WHERE department = :current_department"
+            f") {body}"
+        )
+        params = {"current_department": user.department}
 
     try:
-        result = db.execute(text(body))
+        result = db.execute(text(executable_sql), params)
         if not result.returns_rows:
             return {"error": "这不是一条查询语句"}
         rows = result.fetchall()

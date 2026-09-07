@@ -25,9 +25,10 @@ def test_build_tools_super_admin_no_dept_restriction():
 
 
 def test_build_tools_employee_has_dept_restriction():
-    """员工的说明书会写死部门条件"""
+    """员工只看见后端按部门过滤后的逻辑表。"""
     desc = build_tools(make_user("employee", "销售一部"))[1]["function"]["description"]
-    assert "销售一部" in desc
+    assert "表 scoped_orders(" in desc
+    assert "禁止直接查询 orders" in desc
 
 
 # ========== 实际执行：部门校验 ==========
@@ -62,32 +63,55 @@ def test_admin_can_query_any_department(db_session):
 
 
 def test_employee_can_only_query_own_department(db_session):
-    """员工：不带本部门条件 → 拒绝；带本部门条件 → 放行"""
+    """员工查询 scoped_orders 时，后端自动限制为本部门。"""
     seed_orders(db_session)
     employee = make_user("employee", "销售一部")
 
-    blocked = _query_data(db_session, "SELECT COUNT(*) AS n FROM orders", employee)
-    assert "error" in blocked and "权限不足" in blocked["error"]
-
     allowed = _query_data(
         db_session,
-        "SELECT COUNT(*) AS n FROM orders WHERE department='销售一部'",
+        "SELECT COUNT(*) AS n FROM scoped_orders",
         employee,
     )
     assert "error" not in allowed, allowed.get("error")
     assert allowed["rows"][0]["n"] == 1
 
 
-def test_employee_cannot_query_other_department(db_session):
-    """员工想查别的部门 → 拒绝"""
+def test_employee_cannot_query_source_table(db_session):
+    """员工不能绕过逻辑表直接读取完整 orders。"""
     seed_orders(db_session)
     employee = make_user("employee", "销售一部")
     res = _query_data(
         db_session,
-        "SELECT COUNT(*) AS n FROM orders WHERE department='市场部'",
+        "SELECT COUNT(*) AS n FROM orders",
         employee,
     )
-    assert "error" in res and "权限不足" in res["error"]
+    assert "error" in res and "业务表" in res["error"]
+
+
+def test_employee_tautology_cannot_escape_department_scope(db_session):
+    """即使模型生成 OR 恒真条件，也只能看到 CTE 内的本部门行。"""
+    seed_orders(db_session)
+    employee = make_user("employee", "销售一部")
+    res = _query_data(
+        db_session,
+        (
+            "SELECT COUNT(*) AS n FROM scoped_orders "
+            "WHERE department='市场部' OR '销售一部'='销售一部'"
+        ),
+        employee,
+    )
+    assert "error" not in res, res.get("error")
+    assert res["rows"][0]["n"] == 1
+
+
+def test_employee_without_department_cannot_query(db_session):
+    seed_orders(db_session)
+    res = _query_data(
+        db_session,
+        "SELECT COUNT(*) AS n FROM scoped_orders",
+        make_user("employee"),
+    )
+    assert res["error"] == "账号尚未分配部门，请联系管理员"
 
 
 def test_query_data_cannot_read_users_table(db_session):
@@ -95,7 +119,7 @@ def test_query_data_cannot_read_users_table(db_session):
     seed_orders(db_session)
     res = _query_data(
         db_session,
-        "SELECT employee_no, hashed_password FROM users WHERE department='销售一部'",
+        "SELECT employee_no, hashed_password FROM users",
         make_user("employee", "销售一部"),
     )
     assert "error" in res
@@ -107,7 +131,7 @@ def test_query_data_rejects_subquery_outside_orders(db_session):
     seed_orders(db_session)
     res = _query_data(
         db_session,
-        "SELECT (SELECT COUNT(*) FROM users) AS n FROM orders WHERE department='销售一部'",
+        "SELECT (SELECT COUNT(*) FROM users) AS n FROM scoped_orders",
         make_user("employee", "销售一部"),
     )
     assert "error" in res
