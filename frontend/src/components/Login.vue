@@ -21,12 +21,8 @@ const regName = ref('')
 const regPassword = ref('')
 const regPhone = ref('')
 const regEmail = ref('')
-const regDepartment = ref('')
 const regLoading = ref(false)
 const regError = ref('')
-
-// 注册时可选部门（对应 orders 表的部门）
-const DEPARTMENTS = ['销售一部', '销售二部', '市场部']
 
 // 登录 + 拉用户信息，返回 { access_token, me }（注册后自动登录也要用）
 async function doLogin(account, p) {
@@ -72,7 +68,6 @@ async function submitRegister() {
         password: regPassword.value,
         phone: regPhone.value || null,
         email: regEmail.value || null,
-        department: regDepartment.value || null,
       }),
     })
     const data = await res.json()
@@ -127,15 +122,12 @@ async function submitRegister() {
             size="large"
             show-password
           />
-          <el-select v-model="regDepartment" placeholder="所属部门（选一个）" size="large">
-            <el-option v-for="d in DEPARTMENTS" :key="d" :label="d" :value="d" />
-          </el-select>
           <el-input v-model="regPhone" placeholder="手机号（选填）" size="large" />
           <el-input v-model="regEmail" placeholder="邮箱（选填）" size="large" />
           <el-button type="primary" size="large" :loading="regLoading" @click="submitRegister">
             注册并登录
           </el-button>
-          <p class="hint">注册即员工身份，只能查看本部门数据</p>
+          <p class="hint">注册后由管理员分配部门；未分配前不能查询业务数据</p>
           <p v-if="regError" class="error">{{ regError }}</p>
         </div>
       </el-tab-pane>

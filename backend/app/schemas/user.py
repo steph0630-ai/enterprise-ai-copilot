@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class UserCreate(BaseModel):
@@ -12,7 +12,9 @@ class UserCreate(BaseModel):
     password: str
     phone: str | None = None
     email: EmailStr | None = None
-    department: str | None = None  # 注册时填的部门（管理员在库里/种子脚本设）
+
+    # 注册接口不接受 role / department 等权限字段，防止客户端自行声明身份。
+    model_config = {"extra": "forbid"}
 
     @field_validator("password")
     @classmethod
@@ -43,6 +45,22 @@ class UserRoleUpdate(BaseModel):
         if v not in ("employee", "admin", "super_admin"):
             raise ValueError("角色只能是 employee / admin / super_admin")
         return v
+
+
+class UserDepartmentUpdate(BaseModel):
+    """管理员分配部门；传 null 表示取消分配。"""
+
+    department: str | None = Field(default=None, max_length=50)
+
+    @field_validator("department")
+    @classmethod
+    def normalize_department(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("部门不能为空字符串；取消分配请传 null")
+        return value
 
 
 class UserOut(BaseModel):

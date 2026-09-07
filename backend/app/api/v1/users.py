@@ -9,7 +9,13 @@ from app.api.deps import (
 )
 from app.core.security import create_access_token
 from app.models.user import User
-from app.schemas.user import UserCreate, UserLogin, UserOut, UserRoleUpdate
+from app.schemas.user import (
+    UserCreate,
+    UserDepartmentUpdate,
+    UserLogin,
+    UserOut,
+    UserRoleUpdate,
+)
 from app.services import user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -42,6 +48,23 @@ def list_users(
 ):
     """用户列表（管理端用）"""
     return db.query(User).order_by(User.id).all()
+
+
+@router.put("/{user_id}/department", response_model=UserOut)
+def update_user_department(
+    user_id: int,
+    data: UserDepartmentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """管理员分配或清除员工部门；注册者不能自行设置。"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user.department = data.department
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.put("/{user_id}/role", response_model=UserOut)

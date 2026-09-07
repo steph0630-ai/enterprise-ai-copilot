@@ -20,6 +20,21 @@ def test_register_success(client):
     assert data["employee_no"] == "E100"
     assert data["name"] == "测试"
     assert data["role"] == "employee"  # 关键：注册不可能自封管理员
+    assert data["department"] is None
+
+
+def test_register_cannot_choose_department(client):
+    """即使伪造请求，注册者也不能自行声明所属部门。"""
+    res = client.post(
+        "/api/v1/users/register",
+        json={
+            "employee_no": "E100",
+            "name": "测试",
+            "password": "123456",
+            "department": "财务部",
+        },
+    )
+    assert res.status_code == 422
 
 
 def test_register_duplicate_employee_no(client):

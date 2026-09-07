@@ -119,6 +119,23 @@ async function changeRole(row, role) {
   }
 }
 
+async function changeDepartment(row) {
+  const department = row.department?.trim() || null
+  const res = await fetch(`/api/v1/users/${row.id}/department`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ department }),
+  })
+  if (res.ok) {
+    ElMessage.success(`${row.name} → ${department || '未分配部门'}`)
+    loadUsers()
+  } else {
+    const data = await res.json()
+    ElMessage.error(data.detail || '修改失败')
+    loadUsers()
+  }
+}
+
 onMounted(() => {
   loadDocuments()
   loadUsers()
@@ -181,8 +198,18 @@ onUnmounted(stopPolling) // 离开页面必须停掉轮询，不然定时器泄�
           <el-table-column prop="id" label="ID" width="60" />
           <el-table-column prop="employee_no" label="工号" width="120" />
           <el-table-column prop="name" label="姓名" width="120" />
-          <el-table-column prop="department" label="部门" min-width="120">
-            <template #default="{ row }">{{ row.department || '未分配' }}</template>
+          <el-table-column prop="department" label="部门" min-width="160">
+            <template #default="{ row }">
+              <el-input
+                v-if="row.role === 'employee'"
+                v-model="row.department"
+                placeholder="未分配"
+                size="small"
+                clearable
+                @change="changeDepartment(row)"
+              />
+              <span v-else>{{ row.department || '不限制' }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="角色" width="160">
             <template #default="{ row }">
@@ -209,7 +236,7 @@ onUnmounted(stopPolling) // 离开页面必须停掉轮询，不然定时器泄�
           </el-table-column>
         </el-table>
         <p class="hint">
-          只有超级管理员能改角色，且只能在员工/管理员之间改。超级管理员角色只进不出，由种子脚本维护。
+          管理员可分配员工部门；只有超级管理员能改角色。超级管理员角色只进不出，由种子脚本维护。
         </p>
       </el-tab-pane>
     </el-tabs>

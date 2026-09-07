@@ -10,6 +10,41 @@
 """
 
 
+def test_employee_cannot_change_department(client, user_factory, auth_token):
+    user_factory("E100", role="employee", department="销售一部")
+    target_id = user_factory("E200", role="employee")
+    token = auth_token("E100")
+    res = client.put(
+        f"/api/v1/users/{target_id}/department",
+        json={"department": "财务部"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 403
+
+
+def test_admin_can_assign_and_clear_department(client, user_factory, auth_token):
+    user_factory("A100", role="admin")
+    target_id = user_factory("E200", role="employee")
+    token = auth_token("A100")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assigned = client.put(
+        f"/api/v1/users/{target_id}/department",
+        json={"department": "  财务部  "},
+        headers=headers,
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["department"] == "财务部"
+
+    cleared = client.put(
+        f"/api/v1/users/{target_id}/department",
+        json={"department": None},
+        headers=headers,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["department"] is None
+
+
 def test_employee_cannot_change_role(client, user_factory, auth_token):
     user_factory("E100", role="employee")
     target_id = user_factory("E200", role="employee")

@@ -23,9 +23,9 @@ def create_user(db: Session, data: UserCreate) -> User:
         email=data.email,
         phone=data.phone,
         hashed_password=hash_password(data.password),
-        # 安全：角色永远强制 employee，禁止客户端自封管理员（Day 12 修漏洞）
+        # 权限字段只由后端/管理员维护，注册者不能自选角色或部门。
         role="employee",
-        department=data.department,
+        department=None,
     )
     db.add(user)
     db.commit()
