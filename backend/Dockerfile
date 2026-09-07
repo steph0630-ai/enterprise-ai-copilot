@@ -6,8 +6,10 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # 先复制依赖清单再装（利用 Docker 缓存，改代码不用重装依赖）
+# 加国内 PyPI 源，避免 build 卡在拉 PyPI 国外依赖上。用阿里云（覆盖全、同步及时；
+# 清华/中科大曾缺 requirements 里的 alembic==1.19.1 导致 build 失败）。
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple -r requirements.txt
 
 # 复制应用代码（.dockerignore 会挡住 venv/.env/storage 等）
 COPY app ./app

@@ -1,69 +1,62 @@
 # Enterprise AI Copilot
 
-企业内部知识问答与业务数据分析 Agent。员工可以用自然语言检索企业文档、查询业务数据并保留多轮会话；管理员可以管理文档、用户和角色。
+企业内部的知识问答 + 数据分析的 Agent。员工用自然语言查企业文档、查订单数据，能记住多轮对话；管理员管文档、用户和角色。
 
-## 当前能力
+技术栈：Vue 3 + Vite 前端，FastAPI + SQLAlchemy 后端，DeepSeek 做对话、BGE 做向量、GLM-4V 读图，数据用 MySQL + Chroma，Docker Compose 一键起。
 
-- PDF、DOCX、TXT、Markdown 文档入库
-- 文本、表格和文档内图片解析
-- Embedding + Chroma 语义检索
-- 基于来源片段的 RAG 回答
-- Agent 工具调用与流式输出
-- JWT 登录、角色权限和会话隔离
-- 文档后台处理、状态展示和失败原因记录
-- Docker Compose 本地一键启动
+## 它能做什么
 
-## 技术栈
+- 上传 PDF / DOCX / TXT / MD 文档，自动解析入库
+- 文本、表格、文档里的图片都能解析（图片用视觉模型描述后入库）
+- Embedding + Chroma 做语义检索，基于来源片段回答
+- 直接问"订单总额"这类问题，Agent 会自己写 SQL 查数据库
+- JWT 登录、角色权限、会话隔离
+- 文档后台处理、状态展示、失败原因记录
 
-| 层 | 技术 |
-| --- | --- |
-| 前端 | Vue 3、Vite、Element Plus、Nginx |
-| 后端 | FastAPI、SQLAlchemy、Alembic、PyJWT |
-| AI | OpenAI-compatible API、BGE Embedding、DeepSeek、GLM-4V |
-| 数据 | MySQL、Chroma、本地文件存储 |
-| 交付 | Docker、Docker Compose、pytest |
+## 跑起来之前，先准备这些
 
-> 当前是单机开发/演示架构。持久化任务队列、对象存储、知识库 ACL、可观测性和生产安全加固仍在后续路线中。
+1. **Docker**——compose 要它。
+2. **模型 API Key**，都从 <https://api.siliconflow.cn> 注册拿（同一个 key）：
+   - `LLM_API_KEY`——对话、Agent 用
+   - `EMBEDDING_API_KEY`——文档向量化用
 
-## 项目结构
+3. 另外 `VISION_API_KEY` 是**可选**的（智谱 <https://open.bigmodel.cn>），只影响文档里的图片解析——不填也能跑，只是图里的内容读不出来。
 
-```text
-backend/
-  app/
-    agent/          Agent 循环与工具
-    ai/             LLM、Embedding、视觉模型客户端
-    api/            FastAPI 路由与依赖
-    models/         SQLAlchemy 模型
-    services/       文档、检索、RAG、用户与会话服务
-    vectorstore/    Chroma 封装
-  alembic/          数据库迁移
-  tests/            后端测试
-frontend/           Vue 前端与 Nginx 配置
-docs/               架构和核心流程文档
-docker-compose.yml  本地容器编排
+> `LLM_API_KEY` 和 `EMBEDDING_API_KEY` 必填，缺失时后端无法初始化 AI 客户端；`VISION_API_KEY` 可留空，只会关闭图片理解能力。
+
+## 怎么跑
+
+```powershell
+# 1. 建后端环境变量文件
+Copy-Item backend/.env.example backend/.env
+
+# 2. 编辑 backend/.env，把上面的 key 填进去
+
+# 3. 起服务
+docker compose up --build
+
+# 4. 打开
+http://localhost:8080
 ```
 
-## Docker 启动
+首次启动时后端脚本会自动建表、刷演示账号：`E001 / admin123`（管理员）、`E002 / 123456`、`E003 / 123456`（员工）。
 
-1. 创建后端环境变量文件：
+## 数据从哪来
 
-   ```powershell
-   Copy-Item backend/.env.example backend/.env
-   ```
+系统起来后是**空的**，得自己喂：
 
-2. 在 `backend/.env` 中填写模型 API Key，并修改开发密钥。
+- **知识文档**：直接在前端页面上传 PDF / DOCX / TXT / MD 就行。
+- **订单数据**（数据分析用）：`orders` 表要灌数据，脚本在 `backend/scripts/` 下：
+  ```powershell
+  cd backend
+  .\venv\Scripts\python.exe scripts/import_orders.py 你的订单.csv  # 导入真实订单 CSV
+  # 或
+  .\venv\Scripts\python.exe scripts/import_olist.py               # 用 Olist 公开数据集
+  ```
 
-3. 启动全部服务：
+不灌这两样：问知识库是"没有相关内容"，问订单是"没有数据"。
 
-   ```powershell
-   docker compose up --build
-   ```
-
-4. 打开 <http://localhost:8080>。
-
-`docker-compose.yml` 中的数据库端口和演示账号仅用于本地开发，不应直接用于生产环境。
-
-## 本地开发
+## 本地开发（不走 Docker）
 
 后端：
 
@@ -94,6 +87,26 @@ npm run build
 cd ..
 docker compose config --quiet
 ```
+
+## 项目结构
+
+```
+backend/app/
+  agent/          Agent 循环与工具（search_knowledge / query_data）
+  ai/             LLM、Embedding、视觉模型客户端
+  api/            FastAPI 路由与依赖
+  models/         SQLAlchemy 模型
+  services/       文档、检索、RAG、用户与会话
+  vectorstore/    Chroma 封装
+frontend/         Vue 前端
+docs/             架构与核心流程说明
+```
+
+## 几点说明
+
+- 国内网络 `docker compose up --build` 时，Dockerfile 已经带了**阿里云 PyPI 源**，build 依赖不会卡在国外 PyPI 上。
+- 数据查询（query_data）默认只允许查配置的几张表（`NL2SQL_ALLOWED_TABLES`），敏感表不会给模型查。
+- 这是**单机演示架构**。持久化任务队列、对象存储、知识库 ACL、生产安全加固这些还没做，在后续路线里。
 
 ## 文档
 
