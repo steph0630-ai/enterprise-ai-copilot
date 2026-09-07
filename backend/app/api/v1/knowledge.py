@@ -1,11 +1,16 @@
 """知识检索接口：POST /api/v1/knowledge/search"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.api.deps import get_current_user
 from app.services.retrieval_service import retrieval_service
 
-router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+router = APIRouter(
+    prefix="/knowledge",
+    tags=["knowledge"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class SearchRequest(BaseModel):

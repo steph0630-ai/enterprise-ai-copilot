@@ -72,3 +72,43 @@ def test_me_with_valid_token(client, auth_token):
     assert res.json()["employee_no"] == "E200"
     # 响应绝不含密码哈希（安全）
     assert "hashed_password" not in res.json()
+
+
+def test_knowledge_routes_require_token(client):
+    """旧版检索/问答接口也必须登录，不能绕过 Agent 的鉴权。"""
+    for path in ("/api/v1/knowledge/search", "/api/v1/chat"):
+        res = client.post(path, json={"query": "报销流程"})
+        assert res.status_code == 401, (path, res.text)
+
+
+def test_knowledge_routes_accept_valid_token(
+    client, user_factory, auth_token, monkeypatch
+):
+    """合法 JWT 通过鉴权，并能正常进入原有检索/问答处理。"""
+    from app.api.v1 import chat as chat_api
+    from app.api.v1 import knowledge as knowledge_api
+
+    user_factory("E300")
+    token = auth_token("E300")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    monkeypatch.setattr(knowledge_api.retrieval_service, "search", lambda q, k: [])
+    monkeypatch.setattr(
+        chat_api.rag_service,
+        "answer",
+        lambda q, k: {"answer": "测试回答", "sources": []},
+    )
+
+    search_res = client.post(
+        "/api/v1/knowledge/search",
+        json={"query": "报销流程"},
+        headers=headers,
+    )
+    chat_res = client.post(
+        "/api/v1/chat",
+        json={"query": "报销流程"},
+        headers=headers,
+    )
+
+    assert search_res.status_code == 200, search_res.text
+    assert chat_res.status_code == 200, chat_res.text

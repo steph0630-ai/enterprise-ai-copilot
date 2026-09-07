@@ -1,11 +1,16 @@
 """对话接口：POST /api/v1/chat —— 问知识，返回「答案 + 出处」（Day 6）"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.api.deps import get_current_user
 from app.services.rag_service import rag_service
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["chat"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class ChatRequest(BaseModel):
