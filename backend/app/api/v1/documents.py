@@ -5,7 +5,7 @@ Day 14 安全修复：上传原本没有任何登录保护——任何人都能�
 Day 18 异步化：上传只负责"收文件 + 建记录 + 排队后台入库"，秒回。
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.user import User
-from app.services import document_service
+from app.services import document_service, knowledge_base_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 @router.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,  # Day 18：FastAPI 注入的后台任务队列
+    knowledge_base_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能上传
@@ -37,6 +38,8 @@ async def upload_document(
 
     返回：{"filename": "xxx.pdf", "document_id": 3, "status": "uploading"}
     """
+    knowledge_base_service.get_manageable(db, current_user, knowledge_base_id)
+
     # Day 20：fail-fast 白名单校验。非支持格式【不写盘】直接 400，
     # 修复"不支持的格式传上去秒回成功、后台才翻车"的体验问题。
     # safe_name 全程贯通（写盘/DB/后台任务）：sanitize 剥掉路径成分防穿越，
@@ -57,12 +60,11 @@ async def upload_document(
     file_path = document_service.save_uploaded_file(file.file, safe_name)
 
     # 2. 写数据库记录（status="uploading"，等待后台任务接管）
-    #    knowledge_base_id 先写死为 1（等知识库接口做好再改）
     doc = document_service.create_document_record(
         db=db,
         filename=safe_name,
         file_path=file_path,
-        knowledge_base_id=1,
+        knowledge_base_id=knowledge_base_id,
         status="uploading",
     )
 
@@ -80,6 +82,7 @@ async def upload_document(
 
 @router.get("")
 def list_documents(
+    knowledge_base_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能看
 ):
@@ -87,7 +90,18 @@ def list_documents(
 
     chunk_count 用一次分组查询取回，避免对每份文档各查一次（N+1 问题）。
     """
-    docs = db.query(Document).order_by(Document.id.desc()).all()
+    allowed_ids = knowledge_base_service.manageable_ids(db, current_user)
+    if knowledge_base_id is not None:
+        knowledge_base_service.get_manageable(db, current_user, knowledge_base_id)
+        allowed_ids = [knowledge_base_id]
+    docs = (
+        db.query(Document)
+        .filter(Document.knowledge_base_id.in_(allowed_ids))
+        .order_by(Document.id.desc())
+        .all()
+        if allowed_ids
+        else []
+    )
 
     # 一次 GROUP BY 拿到 每个 document_id → chunk 数量
     chunk_counts = dict(
@@ -100,6 +114,7 @@ def list_documents(
         {
             "id": d.id,
             "filename": d.filename,
+            "knowledge_base_id": d.knowledge_base_id,
             "status": d.status,
             "chunk_count": chunk_counts.get(d.id, 0),
             "created_time": str(d.created_time),
@@ -116,6 +131,10 @@ def delete_document(
     current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能删
 ):
     """删除文档：向量库 + chunks + 磁盘文件 + 记录一起清（见 service 的注释）"""
+    doc = db.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    knowledge_base_service.get_manageable(db, current_user, doc.knowledge_base_id)
     doc = document_service.delete_document(db, document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")

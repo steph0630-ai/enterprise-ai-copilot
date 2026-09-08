@@ -17,6 +17,7 @@ from app.api.deps import ADMIN_ROLES, get_current_user, get_db
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.services.conversation_service import conversation_service
+from app.services import knowledge_base_service
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -26,6 +27,7 @@ class AgentRequest(BaseModel):
 
     query: str
     conversation_id: str = ""
+    knowledge_base_id: int | None = None
 
 
 def _build_messages(
@@ -89,7 +91,12 @@ def agent_chat(
 ):
     """Agent 问答：问题 → 判断任务 → 调工具（知识/RAG 或 数据/SQL）→ 回答"""
     messages, conv = _build_messages(req, current_user, db)
-    result = agent_service.answer(messages, db=db, user=current_user)
+    document_ids = knowledge_base_service.accessible_document_ids(
+        db, current_user, req.knowledge_base_id
+    )
+    result = agent_service.answer(
+        messages, db=db, user=current_user, document_ids=document_ids
+    )
     # 问完了，把这一轮存进会话（下次提问它就是"历史"）
     conversation_service.append(conv, "user", req.query, db)
     conversation_service.append(conv, "assistant", result["answer"], db)
@@ -114,13 +121,18 @@ def agent_chat_stream(
     def generate():
         try:
             messages, conv = _build_messages(req, current_user, db)
+            document_ids = knowledge_base_service.accessible_document_ids(
+                db, current_user, req.knowledge_base_id
+            )
             # 第一帧先把会话 id 推给前端，它要拿这个号发后面的问题
             yield (
                 f"data: {json.dumps({'type': 'conv', 'conversation_id': conv.id}, ensure_ascii=False)}\n\n"
             )
 
             answer_parts: list[str] = []
-            for event in agent_service.answer_stream(messages, db=db, user=current_user):
+            for event in agent_service.answer_stream(
+                messages, db=db, user=current_user, document_ids=document_ids
+            ):
                 if event["type"] == "token":
                     answer_parts.append(event["content"])  # 先攒着，流完才能整段存库
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

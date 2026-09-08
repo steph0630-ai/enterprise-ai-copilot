@@ -2,7 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.api.v1 import users, documents, knowledge, chat, agent, conversations
+from app.api.v1 import agent, chat, conversations, documents, knowledge, knowledge_bases, users
 
 # Day 23：项目原本没有任何日志配置，标准库 logger 默认只显示 WARNING。
 # 图片增强层的"丢图可感知"日志是 INFO 级（入库结束的总结），不配 basicConfig 就看不见。
@@ -30,6 +30,7 @@ app.include_router(chat.router, prefix="/api/v1")
 app.include_router(agent.router, prefix="/api/v1")
 # 注册 v1 会话管理路由（Day 24：列表 / 详情 / 删除）
 app.include_router(conversations.router, prefix="/api/v1")
+app.include_router(knowledge_bases.router, prefix="/api/v1")
 
 
 @app.get("/health")

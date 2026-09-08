@@ -21,7 +21,7 @@ def _mock_llm(monkeypatch):
     monkeypatch.setattr(
         agent_api.agent_service,
         "answer",
-        lambda messages, db, user: {"answer": "（mock）收到。", "tools_used": []},
+        lambda messages, db, user, **kwargs: {"answer": "（mock）收到。", "tools_used": []},
     )
 
 

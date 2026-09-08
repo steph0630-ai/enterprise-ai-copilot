@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.core.security import hash_password
 from app.database.session import SessionLocal
 from app.models.user import User
+from app.models.knowledge_base import KnowledgeBase
 
 # (工号, 密码, 角色, 部门, 姓名)
 # E001 是 super_admin（超级管理员）——初始管理员，只有它能改角色（Day 15）
@@ -65,6 +66,17 @@ try:
             )
             print(f"[创建] {u['employee_no']}（{u['name']}）")
     db.commit()
+    if db.query(KnowledgeBase).count() == 0:
+        owner = db.query(User).filter(User.employee_no == "E001").one()
+        db.add(
+            KnowledgeBase(
+                name="企业公共知识库",
+                owner_id=owner.id,
+                visibility="public",
+            )
+        )
+        db.commit()
+        print("[创建] 企业公共知识库")
     print("种子用户就绪！")
 finally:
     db.close()

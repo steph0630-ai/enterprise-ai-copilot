@@ -5,7 +5,8 @@
 | 表 | 作用 | 关键字段 |
 | --- | --- | --- |
 | `users` | 登录身份与权限 | `employee_no`、`hashed_password`、`role`、`department` |
-| `knowledge_bases` | 知识库基本信息 | `name`、`owner_id` |
+| `knowledge_bases` | 知识库基本信息与可见范围 | `name`、`owner_id`、`visibility`、`department` |
+| `knowledge_base_members` | 私有知识库的额外只读成员 | `knowledge_base_id`、`user_id` |
 | `documents` | 上传文件与处理状态 | `knowledge_base_id`、`filename`、`file_path`、`status` |
 | `document_chunks` | 可追溯的文本片段 | `document_id`、`content`、`chunk_index`、`vector_id` |
 | `orders` | 数据查询工具的演示业务表 | `department`、`amount`、`created_at` |
@@ -33,6 +34,5 @@ MySQL 的 `document_chunks.vector_id` 用于把关系数据与 Chroma 条目对�
 
 ## 当前约束
 
-- 当前知识库上传固定使用 `knowledge_base_id=1`，尚未完成多知识库 ACL。
 - 部分模型字段仅在注释中表达关联，后续需要补真实外键和数据库约束。
 - 本地文件与 Chroma/MySQL 之间不是同一个事务，需要后续增加失败补偿和一致性检查。

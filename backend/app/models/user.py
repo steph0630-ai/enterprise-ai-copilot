@@ -13,7 +13,7 @@ class User(Base):
     name = Column(String(50), nullable=False, server_default="")  # 姓名，显示用，可重复（Day 13 新增）
     email = Column(String(120), unique=True, index=True, nullable=True)
     hashed_password = Column(String(255), nullable=False)  # 只存加密后的密码
-    role = Column(String(20), default="employee")  # employee / admin
+    role = Column(String(20), default="employee")  # employee / admin(部门管理员) / super_admin
     department = Column(String(50), nullable=True)  # 所属部门（Day 12 数据隔离）
     phone = Column(String(20), unique=True, index=True, nullable=True)
     created_time = Column(DateTime(timezone=True), server_default=func.now())

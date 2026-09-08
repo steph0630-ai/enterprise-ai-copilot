@@ -26,7 +26,14 @@ class AgentService:
     def __init__(self) -> None:
         self.llm = llm_service  # 复用单例，不重复建客户端
 
-    def answer(self, messages: list[dict], db: Session, user=None, max_rounds: int = 5) -> dict:
+    def answer(
+        self,
+        messages: list[dict],
+        db: Session,
+        user=None,
+        max_rounds: int = 5,
+        document_ids: list[int] | None = None,
+    ) -> dict:
         """按给定消息列表走 Agent 循环，返回 {answer, tools_used}
 
         Day 11 重构：不再自己拼"只有一个问题"的消息，
@@ -56,6 +63,11 @@ class AgentService:
                         and not _is_meta_query(current_query)):
                     forced = True
                     tools_used.append("search_knowledge")  # 前端亮徽章：确实用了知识库
+                    reference = (
+                        _force_retrieve(current_query)
+                        if document_ids is None
+                        else _force_retrieve(current_query, document_ids)
+                    )
                     # Day 25.3 措辞要点：历史里可能已有错误的旧答案（历史污染，
                     # 模型会延续历史数字）。必须明确"以资料为唯一依据，忽略历史冲突"，
                     # 否则资料注入也压不过历史里的 5,000,000。
@@ -65,7 +77,7 @@ class AgentService:
                             "以下参考资料来自企业知识库，是当前问题的唯一权威依据。"
                             "如果它与本对话之前提到的任何数字或回答不一致，"
                             "一律以本资料为准，不得重复之前提到的数字。\n"
-                            f"参考资料：\n{_force_retrieve(current_query)}"
+                            f"参考资料：\n{reference}"
                         ),
                     })
                     continue  # 重问一次
@@ -90,7 +102,11 @@ class AgentService:
                     args = {}
 
                 tools_used.append(name)
-                result = run_tool(name, args, db, user)  # user 带去部门权限
+                result = (
+                    run_tool(name, args, db, user)
+                    if document_ids is None
+                    else run_tool(name, args, db, user, document_ids)
+                )
 
                 messages.append(
                     {
@@ -103,7 +119,14 @@ class AgentService:
 
         return {"answer": "已达最大轮次仍未给出答案", "tools_used": tools_used}
 
-    def answer_stream(self, messages: list[dict], db: Session, user=None, max_rounds: int = 5):
+    def answer_stream(
+        self,
+        messages: list[dict],
+        db: Session,
+        user=None,
+        max_rounds: int = 5,
+        document_ids: list[int] | None = None,
+    ):
         """流式版 Agent：答案逐字往外吐（Day 10）
 
         Day 11 重构：和 answer() 一样收"含历史的完整消息列表"，
@@ -172,13 +195,18 @@ class AgentService:
                         and not _is_meta_query(current_query)):
                     forced = True
                     tools_used.append("search_knowledge")
+                    reference = (
+                        _force_retrieve(current_query)
+                        if document_ids is None
+                        else _force_retrieve(current_query, document_ids)
+                    )
                     messages.append({
                         "role": "system",
                         "content": (
                             "以下参考资料来自企业知识库，是当前问题的唯一权威依据。"
                             "如果它与本对话之前提到的任何数字或回答不一致，"
                             "一律以本资料为准，不得重复之前提到的数字。\n"
-                            f"参考资料：\n{_force_retrieve(current_query)}"
+                            f"参考资料：\n{reference}"
                         ),
                     })
                     continue  # 带着资料重新问（这轮的草稿不要了）
@@ -218,7 +246,11 @@ class AgentService:
                     args = {}
                 tools_used.append(name)
                 yield {"type": "tool", "name": name}  # 让前端先亮起"正在调工具"的徽章
-                result = run_tool(name, args, db, user)  # user 带去部门权限
+                result = (
+                    run_tool(name, args, db, user)
+                    if document_ids is None
+                    else run_tool(name, args, db, user, document_ids)
+                )
                 messages.append(
                     {
                         "role": "tool",

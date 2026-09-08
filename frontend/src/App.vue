@@ -20,6 +20,7 @@ function onLogin(access_token, userInfo) {
   localStorage.setItem('token', access_token)
   localStorage.setItem('user', JSON.stringify(userInfo))
   loadConversations(true)  // Day 24：登录后拉回最近会话，不用从空白开始
+  loadKnowledgeBases()
 }
 
 // 双入口（Day 14）：'chat' 聊天页 / 'admin' 管理后台
@@ -37,6 +38,8 @@ function logout() {
   messages.value = []
   conversationId.value = ''
   conversations.value = []  // Day 24：会话列表跟着清
+  knowledgeBases.value = []
+  knowledgeBaseId.value = null
   view.value = 'chat'
 }
 
@@ -49,6 +52,16 @@ const listRef = ref(null)    // 消息容器 DOM 引用，用于滚动到底部
 const conversationId = ref('')
 // 会话列表（Day 24 侧边栏）：后端存的，刷新后拉回来 → 历史不丢
 const conversations = ref([])
+const knowledgeBases = ref([])
+const knowledgeBaseId = ref(null)
+
+async function loadKnowledgeBases() {
+  if (!token.value) return
+  const res = await fetch('/api/v1/knowledge-bases', {
+    headers: { Authorization: `Bearer ${token.value}` },
+  })
+  if (res.ok) knowledgeBases.value = await res.json()
+}
 
 async function send() {
   const question = input.value.trim()
@@ -69,7 +82,11 @@ async function send() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token.value}`,  // Day 12：后端靠它认人
       },
-      body: JSON.stringify({ query: question, conversation_id: conversationId.value }),
+      body: JSON.stringify({
+        query: question,
+        conversation_id: conversationId.value,
+        knowledge_base_id: knowledgeBaseId.value,
+      }),
     })
     if (res.status === 401) {
       logout()  // token 过期/无效 → 清掉登录态，回登录页
@@ -143,7 +160,10 @@ function scrollBottom() {
 // ===== Day 24：会话列表侧边栏 =====
 
 // 进入页面就恢复历史：已登录 → 拉列表 → 打开最近一个会话（刷新不丢历史的核心）
-onMounted(() => loadConversations(true))
+onMounted(() => {
+  loadConversations(true)
+  loadKnowledgeBases()
+})
 
 // 拉会话列表。openLatest=true 时若当前不在任何会话里，自动打开最近一个
 async function loadConversations(openLatest = false) {
@@ -242,7 +262,7 @@ async function removeConversation(c) {
           <span class="user-no">{{ user?.employee_no }}</span>
         </div>
         <el-tag size="small" :type="isAdmin ? 'danger' : 'info'">
-          {{ user?.role === 'super_admin' ? '超级管理员' : isAdmin ? '管理员' : user?.department || '员工' }}
+          {{ user?.role === 'super_admin' ? '超级管理员' : user?.role === 'admin' ? `部门管理员 · ${user?.department || '未分配部门'}` : user?.department || '员工' }}
         </el-tag>
         <!-- Day 14 双入口：只有管理员有这个按钮，员工根本看不到 -->
         <el-button
@@ -300,6 +320,16 @@ async function removeConversation(c) {
       </div>
 
       <footer class="input-bar">
+        <el-select
+          v-model="knowledgeBaseId"
+          class="kb-select"
+          clearable
+          placeholder="全部可访问知识库"
+          :disabled="loading"
+          @change="newConversation"
+        >
+          <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
+        </el-select>
         <el-input
           v-model="input"
           placeholder="输入你的问题，回车发送"
@@ -313,7 +343,12 @@ async function removeConversation(c) {
     </template>
 
     <!-- Day 14：管理员切到管理后台（文档/用户管理）；Day 15：传 userRole 决定角色列能不能改 -->
-    <AdminPanel v-else :token="token" :user-role="user?.role" />
+    <AdminPanel
+      v-else
+      :token="token"
+      :user-role="user?.role"
+      :user-department="user?.department"
+    />
   </div>
 </template>
 
@@ -325,6 +360,11 @@ async function removeConversation(c) {
   flex-direction: column;
   max-width: 1024px; /* Day 24：加了侧边栏，860px 太挤 */
   margin: 0 auto;
+}
+
+.kb-select {
+  width: 220px;
+  flex-shrink: 0;
 }
 
 /* Day 24：左会话列表 + 右聊天 */

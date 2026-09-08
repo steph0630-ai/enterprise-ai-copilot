@@ -2,7 +2,7 @@
 
 背景：Day 15 加了 super_admin 角色，但 tools.py 的部门校验还只认 admin，
 导致超管被当成普通员工（部门 None → 永远被告知"只能查部门(None)"）。
-这组测试把修复钉死：管理端（admin/super_admin）可查全部部门，员工只能查本部门。
+这组测试把修复钉死：只有 super_admin 可查全部部门，部门管理员和员工只能查本部门。
 """
 
 from types import SimpleNamespace
@@ -31,6 +31,12 @@ def test_build_tools_employee_has_dept_restriction():
     assert "禁止直接查询 orders" in desc
 
 
+def test_build_tools_department_admin_has_dept_restriction():
+    desc = build_tools(make_user("admin", "销售一部"))[1]["function"]["description"]
+    assert "表 scoped_orders(" in desc
+    assert "禁止直接查询 orders" in desc
+
+
 # ========== 实际执行：部门校验 ==========
 
 def seed_orders(db_session):
@@ -53,13 +59,15 @@ def test_super_admin_can_query_any_department(db_session):
     assert res["rows"][0]["total"] == 300.0
 
 
-def test_admin_can_query_any_department(db_session):
+def test_department_admin_can_only_query_own_department(db_session):
     seed_orders(db_session)
     res = _query_data(
-        db_session, "SELECT COUNT(*) AS n FROM orders", make_user("admin")
+        db_session,
+        "SELECT COUNT(*) AS n FROM scoped_orders",
+        make_user("admin", "销售一部"),
     )
     assert "error" not in res, res.get("error")
-    assert res["rows"][0]["n"] == 2
+    assert res["rows"][0]["n"] == 1
 
 
 def test_employee_can_only_query_own_department(db_session):

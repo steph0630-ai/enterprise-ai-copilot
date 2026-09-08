@@ -45,18 +45,28 @@ class RetrievalService:
             )
         return items
 
-    def search(self, query: str, k: int = 3) -> list[dict]:
+    def search(
+        self, query: str, k: int = 3, document_ids: list[int] | None = None
+    ) -> list[dict]:
         """检索流程：问题 → 向量 → Top K 片段"""
+        if document_ids == []:
+            return []
+        document_filter = (
+            {"document_id": {"$in": document_ids}} if document_ids is not None else None
+        )
         # 1. 问题转成向量（只算一次）
         query_vec = self.embedding.embed_query(query)
 
         # 2. 普通检索
-        items = self._query_with_vec(query_vec, k=k)
+        items = self._query_with_vec(query_vec, k=k, where=document_filter)
 
         # 3. Day 23：用户明确问"图中/图表/流程图" → 额外查图 chunk，排前面。
         #    老数据没有 type=image 标记 → 图查询为空 → 静默退回普通结果。
         if any(kw in query for kw in IMAGE_QUERY_KEYWORDS):
-            img_items = self._query_with_vec(query_vec, k=k, where={"type": "image"})
+            image_filter = {"type": "image"}
+            if document_filter:
+                image_filter = {"$and": [document_filter, image_filter]}
+            img_items = self._query_with_vec(query_vec, k=k, where=image_filter)
             if img_items:
                 seen = {(it["text"], it["source"]) for it in items}
                 # 图 chunk 的 source 标"[图]"前缀——rag 的 context 会显示，模型知道这是图内容

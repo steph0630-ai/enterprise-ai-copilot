@@ -1,7 +1,7 @@
 """容器启动入口（Day 17 创建 / Day 18 修一个 stamp 坑）
 
 一个 python 脚本按顺序完成启动前的所有事：
-    等数据库就绪 → 建表 → （全新库 stamp | 老库 upgrade）→ 种子数据 → 起 uvicorn
+    等数据库就绪 → （全新库建表并 stamp | 老库 upgrade）→ 种子数据 → 起 uvicorn
 
 为什么用 python 写入口而不是 shell 脚本？
 - Windows 上写的 .sh 容易带 CRLF 换行，进 Linux 容器会报 "command not found"；
@@ -67,13 +67,13 @@ def is_fresh_db() -> bool:
 
 if __name__ == "__main__":
     wait_for_db()
-    run([sys.executable, "create_tables.py"])  # 建表（幂等：只建不存在的）
 
     # Day 18 修的一个真坑：原来无条件 stamp head，老库会被"假标记"成已应用，
     # 实际迁移没跑（0002 的 error_message 列就是这么漏掉的）。
     # 现在区分：全新库 stamp（表已是当前结构，迁移只是历史标记）；
-    #           老库 upgrade（应用还没跑过的迁移，如 0002 加列）。
+    #           老库 upgrade（由迁移创建新表、添加新列，不能提前 create_all）。
     if is_fresh_db():
+        run([sys.executable, "create_tables.py"])
         run([sys.executable, "-m", "alembic", "stamp", "head"])
     else:
         run([sys.executable, "-m", "alembic", "upgrade", "head"])

@@ -22,8 +22,19 @@ def test_employee_cannot_change_department(client, user_factory, auth_token):
     assert res.status_code == 403
 
 
-def test_admin_can_assign_and_clear_department(client, user_factory, auth_token):
-    user_factory("A100", role="admin")
+def test_department_admin_cannot_change_department(client, user_factory, auth_token):
+    user_factory("A100", role="admin", department="销售一部")
+    target_id = user_factory("E200", role="employee")
+    res = client.put(
+        f"/api/v1/users/{target_id}/department",
+        json={"department": "财务部"},
+        headers={"Authorization": f"Bearer {auth_token('A100')}"},
+    )
+    assert res.status_code == 403
+
+
+def test_super_admin_can_assign_and_clear_department(client, user_factory, auth_token):
+    user_factory("A100", role="super_admin")
     target_id = user_factory("E200", role="employee")
     token = auth_token("A100")
     headers = {"Authorization": f"Bearer {token}"}
@@ -72,7 +83,7 @@ def test_admin_cannot_change_role(client, user_factory, auth_token):
 
 def test_super_admin_can_promote_employee(client, user_factory, auth_token):
     user_factory("S100", role="super_admin")
-    target_id = user_factory("E200", role="employee")
+    target_id = user_factory("E200", role="employee", department="销售一部")
     token = auth_token("S100")
     res = client.put(
         f"/api/v1/users/{target_id}/role",
@@ -81,6 +92,18 @@ def test_super_admin_can_promote_employee(client, user_factory, auth_token):
     )
     assert res.status_code == 200
     assert res.json()["role"] == "admin"
+
+
+def test_cannot_promote_employee_without_department(client, user_factory, auth_token):
+    user_factory("S100", role="super_admin")
+    target_id = user_factory("E200", role="employee")
+    res = client.put(
+        f"/api/v1/users/{target_id}/role",
+        json={"role": "admin"},
+        headers={"Authorization": f"Bearer {auth_token('S100')}"},
+    )
+    assert res.status_code == 400
+    assert "部门" in res.json()["detail"]
 
 
 def test_super_admin_can_demote_admin(client, user_factory, auth_token):
@@ -94,6 +117,17 @@ def test_super_admin_can_demote_admin(client, user_factory, auth_token):
     )
     assert res.status_code == 200
     assert res.json()["role"] == "employee"
+
+
+def test_cannot_clear_department_from_department_admin(client, user_factory, auth_token):
+    user_factory("S100", role="super_admin")
+    target_id = user_factory("A200", role="admin", department="销售一部")
+    res = client.put(
+        f"/api/v1/users/{target_id}/department",
+        json={"department": None},
+        headers={"Authorization": f"Bearer {auth_token('S100')}"},
+    )
+    assert res.status_code == 400
 
 
 def test_cannot_grant_super_admin(client, user_factory, auth_token):

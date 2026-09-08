@@ -107,11 +107,13 @@ def test_knowledge_routes_accept_valid_token(
     token = auth_token("E300")
     headers = {"Authorization": f"Bearer {token}"}
 
-    monkeypatch.setattr(knowledge_api.retrieval_service, "search", lambda q, k: [])
+    monkeypatch.setattr(
+        knowledge_api.retrieval_service, "search", lambda q, k, **kwargs: []
+    )
     monkeypatch.setattr(
         chat_api.rag_service,
         "answer",
-        lambda q, k: {"answer": "测试回答", "sources": []},
+        lambda q, k, **kwargs: {"answer": "测试回答", "sources": []},
     )
 
     search_res = client.post(

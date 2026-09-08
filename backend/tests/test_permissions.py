@@ -18,12 +18,11 @@ def test_employee_cannot_list_users(client, user_factory, auth_token):
     assert res.status_code == 403
 
 
-def test_admin_can_list_users(client, user_factory, auth_token):
-    user_factory("A100", role="admin")
+def test_department_admin_cannot_list_users(client, user_factory, auth_token):
+    user_factory("A100", role="admin", department="销售一部")
     token = auth_token("A100")
     res = client.get("/api/v1/users", headers={"Authorization": f"Bearer {token}"})
-    assert res.status_code == 200
-    assert len(res.json()) >= 1
+    assert res.status_code == 403
 
 
 def test_super_admin_can_list_users(client, user_factory, auth_token):

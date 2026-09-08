@@ -113,7 +113,7 @@ def test_agent_chat_works_with_token(client, user_factory, auth_token, monkeypat
     monkeypatch.setattr(
         agent_api.agent_service,
         "answer",
-        lambda messages, db, user: {"answer": "（mock）报销流程第一步是填表。", "tools_used": []},
+        lambda messages, db, user, **kwargs: {"answer": "（mock）报销流程第一步是填表。", "tools_used": []},
     )
 
     user_factory("E100", role="employee", department="销售一部")
@@ -137,7 +137,7 @@ def test_agent_chat_stores_history(client, user_factory, auth_token, monkeypatch
     monkeypatch.setattr(
         agent_api.agent_service,
         "answer",
-        lambda messages, db, user: {"answer": "测试答案", "tools_used": []},
+        lambda messages, db, user, **kwargs: {"answer": "测试答案", "tools_used": []},
     )
 
     user_factory("E100", role="employee")

@@ -2,8 +2,11 @@
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_db
+from app.models.user import User
+from app.services import knowledge_base_service
 from app.services.rag_service import rag_service
 
 router = APIRouter(
@@ -18,10 +21,18 @@ class ChatRequest(BaseModel):
 
     query: str
     top_k: int = Field(default=3, ge=1, le=5)  # 对话场景片段别给太多，省 token
+    knowledge_base_id: int | None = None
 
 
 @router.post("")
-def chat(req: ChatRequest):
+def chat(
+    req: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """RAG 问答：问题 → 检索 → 拼 Prompt → LLM 生成 → 答案 + 出处"""
-    result = rag_service.answer(req.query, k=req.top_k)
+    document_ids = knowledge_base_service.accessible_document_ids(
+        db, current_user, req.knowledge_base_id
+    )
+    result = rag_service.answer(req.query, k=req.top_k, document_ids=document_ids)
     return {"query": req.query, **result}

@@ -12,7 +12,6 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.api.deps import ADMIN_ROLES  # 管理端角色集合（单一来源，别再漏放行）
 from app.core.config import settings  # NL2SQL 授权表清单（Day 26 通用化）
 from app.services.nl2sql_schema import get_schema_text  # 运行时读真实表结构（Day 26）
 from app.services.rag_service import rag_service
@@ -88,12 +87,12 @@ def build_tools(user=None) -> list[dict]:
 
     模型看不见代码，只看 description。Day 26 通用化：把 TOOLS 里的占位 __SCHEMA__
     替换为运行时读到的授权表真实结构（nl2sql_schema.get_schema_text，有缓存）。
-    普通员工只看见 scoped_orders；后端执行时再把它绑定到当前用户部门。
+    部门管理员和普通员工只看见 scoped_orders；后端执行时绑定到当前用户部门。
     """
     tools = copy.deepcopy(TOOLS)  # 每次复制一份，别污染全局的 TOOLS
     schema = get_schema_text()
-    is_employee = user and user.role not in ADMIN_ROLES
-    if is_employee:
+    is_department_scoped = user and user.role != "super_admin"
+    if is_department_scoped:
         # 员工只暴露 orders 的结构，并改成不可绕过的逻辑表名 scoped_orders。
         source_prefix = f"表 {_EMPLOYEE_SOURCE_TABLE}("
         source_schema = next(
@@ -110,7 +109,7 @@ def build_tools(user=None) -> list[dict]:
             t["function"]["description"] = t["function"]["description"].replace(
                 "__SCHEMA__", schema + "\n"
             )
-            if is_employee:
+            if is_department_scoped:
                 t["function"]["description"] += (
                     f"\n权限：只能查询 {_EMPLOYEE_SCOPED_TABLE}，禁止直接查询"
                     f" {_EMPLOYEE_SOURCE_TABLE}。该逻辑表已由后端限制为当前用户部门，"
@@ -147,7 +146,9 @@ def _infer_top_k(query: str) -> int:
     return 10 if any(kw in query for kw in ENUM_KEYWORDS) else 8
 
 
-def _search_knowledge(query: str, top_k: int | None = None) -> dict:
+def _search_knowledge(
+    query: str, top_k: int | None = None, document_ids: list[int] | None = None
+) -> dict:
     """知识类工具：复用 Day 6 的完整 RAG（检索 + 生成 + 出处）
 
     Day 26 改为"后端单点裁决 top_k"：模型传 top_k 会低估召回数漏答案
@@ -158,7 +159,10 @@ def _search_knowledge(query: str, top_k: int | None = None) -> dict:
     防极端值打爆上下文。
     """
     top_k = min(max(_infer_top_k(query), 1), 10)
-    result = rag_service.answer(query, k=top_k)
+    if document_ids is None:
+        result = rag_service.answer(query, k=top_k)
+    else:
+        result = rag_service.answer(query, k=top_k, document_ids=document_ids)
     return {"answer": result["answer"], "sources": result["sources"]}
 
 
@@ -178,13 +182,16 @@ def _is_meta_query(query: str) -> bool:
     return any(kw in query for kw in META_QUERY_KEYWORDS)
 
 
-def _force_retrieve(query: str) -> str:
+def _force_retrieve(query: str, document_ids: list[int] | None = None) -> str:
     """强制检索知识库，返回可直接注入 context 的参考资料文本（兜底用）
 
     不调 LLM、不生成答案——只把最相关的 chunk 原文拼出来。
     无结果时明说"没有"，让模型无从编造。
     """
-    chunks = rag_service.retrieval.search(query, k=3)
+    if document_ids is None:
+        chunks = rag_service.retrieval.search(query, k=3)
+    else:
+        chunks = rag_service.retrieval.search(query, k=3, document_ids=document_ids)
     chunks = rag_service._filter_relevant(chunks)
     if not chunks:
         return "（知识库中没有相关文档）"
@@ -235,7 +242,7 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
       1. 只允许 SELECT（防止模型把表删了/改了）
       2. 只允许单条语句（去掉结尾分号后，再出现分号 = 多条，拒绝）
       3. 最多返回 20 行（防止把整张表倒进上下文，token 爆炸）
-      4. 部门权限（非管理员）：只能查询后端按当前部门构造的 scoped_orders
+      4. 部门权限（非超级管理员）：只能查询后端按当前部门构造的 scoped_orders
     """
     cleaned = sql.strip()
     # 去掉结尾分号后，再出现分号就是多条语句
@@ -245,18 +252,18 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
     if ";" in body:
         return {"error": "只允许单条 SQL 语句"}
 
-    is_employee = user and user.role not in ADMIN_ROLES
-    if is_employee and not user.department:
+    is_department_scoped = user and user.role != "super_admin"
+    if is_department_scoped and not user.department:
         return {"error": "账号尚未分配部门，请联系管理员"}
 
-    allowed_tables = {_EMPLOYEE_SCOPED_TABLE} if is_employee else None
+    allowed_tables = {_EMPLOYEE_SCOPED_TABLE} if is_department_scoped else None
     scope_error = _validate_query_scope(body, allowed_tables)
     if scope_error:
         return {"error": scope_error}
 
     params = None
     executable_sql = body
-    if is_employee:
+    if is_department_scoped:
         # 权限条件完全由服务器生成和绑定；模型 SQL 只能在过滤后的 CTE 上继续查询。
         executable_sql = (
             f"WITH {_EMPLOYEE_SCOPED_TABLE} AS ("
@@ -289,13 +296,19 @@ def _query_data(db: Session, sql: str, user=None) -> dict:
 
 # ========== 执行器：按名字找到函数并调用 ==========
 
-def run_tool(name: str, arguments: dict, db: Session, user=None) -> dict:
+def run_tool(
+    name: str,
+    arguments: dict,
+    db: Session,
+    user=None,
+    document_ids: list[int] | None = None,
+) -> dict:
     """按工具名分发到具体函数，返回结果（给 Agent 循环用）
 
     user 是当前登录用户（Day 12）：query_data 靠它做部门权限校验。
     """
     if name == "search_knowledge":
-        return _search_knowledge(**arguments)
+        return _search_knowledge(**arguments, document_ids=document_ids)
     if name == "query_data":
         return _query_data(db=db, user=user, **arguments)
     return {"error": f"未知工具：{name}"}

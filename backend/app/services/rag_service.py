@@ -51,10 +51,15 @@ class RagService:
         self.retrieval = retrieval_service
         self.llm = llm_service
 
-    def answer(self, question: str, k: int = 3) -> dict:
+    def answer(
+        self, question: str, k: int = 3, document_ids: list[int] | None = None
+    ) -> dict:
         """问一个知识类问题，返回 {answer, sources}"""
         # 1. 检索：拿 Top K 片段（带来源文件名 + 距离）
-        chunks = self.retrieval.search(question, k=k)
+        if document_ids is None:
+            chunks = self.retrieval.search(question, k=k)
+        else:
+            chunks = self.retrieval.search(question, k=k, document_ids=document_ids)
 
         # 没有资料就别硬答（防止 LLM 面对空资料瞎编）
         if not chunks:

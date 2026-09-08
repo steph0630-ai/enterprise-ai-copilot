@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
-    get_current_admin,
     get_current_super_admin,
     get_current_user,
     get_db,
@@ -44,9 +43,9 @@ def me(current_user: User = Depends(get_current_user)):
 @router.get("", response_model=list[UserOut])
 def list_users(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin),  # Day 14：只有管理员能看全部用户
+    current_user: User = Depends(get_current_super_admin),
 ):
-    """用户列表（管理端用）"""
+    """用户列表（仅超级管理员可用）"""
     return db.query(User).order_by(User.id).all()
 
 
@@ -55,12 +54,14 @@ def update_user_department(
     user_id: int,
     data: UserDepartmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_super_admin),
 ):
-    """管理员分配或清除员工部门；注册者不能自行设置。"""
+    """超级管理员分配或清除员工部门；注册者不能自行设置。"""
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    if user.role == "admin" and data.department is None:
+        raise HTTPException(status_code=400, detail="请先将部门管理员降级为员工")
     user.department = data.department
     db.commit()
     db.refresh(user)
@@ -93,6 +94,8 @@ def update_user_role(
         raise HTTPException(status_code=400, detail="超级管理员的角色不能通过接口修改")
     if data.role == "super_admin":
         raise HTTPException(status_code=400, detail="不能通过接口授予超级管理员")
+    if data.role == "admin" and not user.department:
+        raise HTTPException(status_code=400, detail="请先为该用户分配部门")
     user.role = data.role
     db.commit()
     db.refresh(user)

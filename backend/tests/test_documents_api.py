@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.knowledge_base import KnowledgeBase
 from app.services import document_service
 from app.vectorstore.store import vector_store
 
@@ -23,6 +24,7 @@ def upload(client: TestClient, token: str | None = None):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return client.post(
         "/api/v1/documents/upload",
+        data={"knowledge_base_id": "1"},
         files={"file": ("test.pdf", b"%PDF-1.4 fake content", "application/pdf")},
         headers=headers,
     )
@@ -40,7 +42,7 @@ def test_employee_cannot_upload(client, user_factory, auth_token):
     assert upload(client, token).status_code == 403
 
 
-def test_admin_can_upload_returns_immediately(client, user_factory, auth_token, monkeypatch):
+def test_admin_can_upload_returns_immediately(client, user_factory, auth_token, monkeypatch, db_session):
     """管理员上传 → 200，且秒回"uploading"（不再等入库）
 
     Day 18 异步契约：接口只负责收文件+建记录，返回 status="uploading"。
@@ -53,7 +55,9 @@ def test_admin_can_upload_returns_immediately(client, user_factory, auth_token, 
     )
     monkeypatch.setattr(document_service, "ingest_document_job", lambda doc_id, filename: None)
 
-    user_factory("A100", role="admin")
+    owner_id = user_factory("A100", role="admin", department="销售部")
+    db_session.add(KnowledgeBase(id=1, name="测试库", owner_id=owner_id, visibility="department", department="销售部"))
+    db_session.commit()
     token = auth_token("A100")
     res = upload(client, token)
     assert res.status_code == 200, res.text
@@ -62,7 +66,7 @@ def test_admin_can_upload_returns_immediately(client, user_factory, auth_token, 
     assert data["document_id"] > 0
 
 
-def test_upload_too_large_413(client, user_factory, auth_token, monkeypatch):
+def test_upload_too_large_413(client, user_factory, auth_token, monkeypatch, db_session):
     """超过大小上限 → 413（Day 18 流式写盘中途拒绝）"""
     from app.core.config import settings
 
@@ -70,13 +74,15 @@ def test_upload_too_large_413(client, user_factory, auth_token, monkeypatch):
     monkeypatch.setattr(settings, "MAX_DOC_SIZE", 10)
     monkeypatch.setattr(document_service, "ingest_document_job", lambda doc_id, filename: None)
 
-    user_factory("A100", role="admin")
+    owner_id = user_factory("A100", role="admin", department="销售部")
+    db_session.add(KnowledgeBase(id=1, name="测试库", owner_id=owner_id, visibility="department", department="销售部"))
+    db_session.commit()
     token = auth_token("A100")
     res = upload(client, token)
     assert res.status_code == 413, res.text
 
 
-def test_upload_unsupported_extension_400(client, user_factory, auth_token, monkeypatch):
+def test_upload_unsupported_extension_400(client, user_factory, auth_token, monkeypatch, db_session):
     """非支持格式（如 .xlsx）→ 400 立即拒收，且【不写盘】（Day 20 fail-fast）
 
     打桩 save_uploaded_file 为"被调用就抛错"：如果 fail-fast 拦在保存之前，
@@ -90,10 +96,13 @@ def test_upload_unsupported_extension_400(client, user_factory, auth_token, monk
 
     monkeypatch.setattr(document_service, "save_uploaded_file", fake_save)
 
-    user_factory("A100", role="admin")
+    owner_id = user_factory("A100", role="admin", department="销售部")
+    db_session.add(KnowledgeBase(id=1, name="测试库", owner_id=owner_id, visibility="department", department="销售部"))
+    db_session.commit()
     token = auth_token("A100")
     res = client.post(
         "/api/v1/documents/upload",
+        data={"knowledge_base_id": "1"},
         files={"file": ("data.xlsx", b"x", "application/vnd.ms-excel")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -193,9 +202,10 @@ def test_delete_document_by_employee_forbidden(client, user_factory, auth_token,
 
 def test_delete_document_by_admin(client, user_factory, auth_token, db_session):
     """管理员删除 → 200，且记录从库里消失"""
+    owner_id = user_factory("A100", role="admin", department="销售部")
+    db_session.add(KnowledgeBase(id=1, name="测试库", owner_id=owner_id, visibility="department", department="销售部"))
+    db_session.commit()
     doc = _setup_doc(db_session, status="processed")
-
-    user_factory("A100", role="admin")
     token = auth_token("A100")
     res = client.delete(f"/api/v1/documents/{doc.id}", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
