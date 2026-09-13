@@ -8,6 +8,7 @@ import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import Login from './components/Login.vue'
 import AdminPanel from './components/AdminPanel.vue'  // Day 14：管理后台（只有管理员能进）
+import ProfilePanel from './components/ProfilePanel.vue'
 
 // 登录态（存 localStorage，刷新不丢）：
 // token 为空 = 未登录，显示登录页
@@ -29,6 +30,16 @@ const view = ref('chat')
 
 // Day 15：super_admin 和 admin 都能进管理后台（但只有 super_admin 能改角色）
 const isAdmin = computed(() => ['admin', 'super_admin'].includes(user.value?.role))
+
+function handleUserCommand(command) {
+  if (command === 'profile') view.value = 'profile'
+  else if (command === 'logout') logout()
+}
+
+function onProfileSaved(profile) {
+  user.value = profile
+  localStorage.setItem('user', JSON.stringify(profile))
+}
 
 function logout() {
   token.value = ''
@@ -257,10 +268,6 @@ async function removeConversation(c) {
         <p class="subtitle">问知识、查数据——Agent 自动判断并调用工具</p>
       </div>
       <div class="user-box">
-        <div class="whoami">
-          <span class="user-name">{{ user?.name }}</span>
-          <span class="user-no">{{ user?.employee_no }}</span>
-        </div>
         <el-tag size="small" :type="isAdmin ? 'danger' : 'info'">
           {{ user?.role === 'super_admin' ? '超级管理员' : user?.role === 'admin' ? `部门管理员 · ${user?.department || '未分配部门'}` : user?.department || '员工' }}
         </el-tag>
@@ -274,7 +281,21 @@ async function removeConversation(c) {
         >
           {{ view === 'admin' ? '返回聊天' : '管理后台' }}
         </el-button>
-        <el-button size="small" @click="logout">退出</el-button>
+        <el-dropdown @command="handleUserCommand">
+          <span class="user-trigger">
+            <span class="whoami">
+              <span class="user-name">{{ user?.name }}</span>
+              <span class="user-no">{{ user?.employee_no }}</span>
+            </span>
+            <span aria-hidden="true">⌄</span>
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="profile">个人中心</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
 
@@ -344,10 +365,16 @@ async function removeConversation(c) {
 
     <!-- Day 14：管理员切到管理后台（文档/用户管理）；Day 15：传 userRole 决定角色列能不能改 -->
     <AdminPanel
-      v-else
+      v-else-if="view === 'admin'"
       :token="token"
       :user-role="user?.role"
       :user-department="user?.department"
+    />
+    <ProfilePanel
+      v-else
+      :token="token"
+      @back="view = 'chat'"
+      @saved="onProfileSaved"
     />
   </div>
 </template>
@@ -459,6 +486,15 @@ async function removeConversation(c) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.user-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #606266;
+  cursor: pointer;
+  outline: none;
 }
 
 /* 姓名 + 工号竖排：姓名大、工号小 */

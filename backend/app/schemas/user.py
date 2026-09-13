@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
@@ -28,6 +30,29 @@ class UserLogin(BaseModel):
     """登录请求体：工号 + 密码（姓名不是登录凭据，重名有歧义）"""
     employee_no: str
     password: str
+
+
+class UserProfileUpdate(BaseModel):
+    """当前用户可修改的公开资料；权限和登录账号不在此接口中。"""
+
+    name: str = Field(min_length=1, max_length=50)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=20)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("姓名不能为空")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_phone(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 class UserRoleUpdate(BaseModel):
@@ -72,6 +97,7 @@ class UserOut(BaseModel):
     phone: str | None
     role: str
     department: str | None
+    created_time: datetime
 
     # Pydantic V2 新写法（旧 class Config 已弃用）：允许从 ORM 对象转换
     model_config = {"from_attributes": True}

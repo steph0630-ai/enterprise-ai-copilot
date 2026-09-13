@@ -89,6 +89,37 @@ def test_me_with_valid_token(client, auth_token):
     assert "hashed_password" not in res.json()
 
 
+def test_update_my_profile_only_changes_public_fields(client, user_factory, auth_token):
+    user_factory("E210", role="employee", department="销售一部", name="旧姓名")
+    headers = {"Authorization": f"Bearer {auth_token('E210')}"}
+
+    res = client.put(
+        "/api/v1/users/me",
+        json={"name": "  新姓名  ", "email": "new@example.com", "phone": "13800138000"},
+        headers=headers,
+    )
+
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["name"] == "新姓名"
+    assert data["email"] == "new@example.com"
+    assert data["phone"] == "13800138000"
+    assert data["employee_no"] == "E210"
+    assert data["role"] == "employee"
+    assert data["department"] == "销售一部"
+    assert data["created_time"]
+
+
+def test_update_my_profile_rejects_permission_fields(client, user_factory, auth_token):
+    user_factory("E211")
+    res = client.put(
+        "/api/v1/users/me",
+        json={"name": "测试", "role": "super_admin"},
+        headers={"Authorization": f"Bearer {auth_token('E211')}"},
+    )
+    assert res.status_code == 422
+
+
 def test_knowledge_routes_require_token(client):
     """旧版检索/问答接口也必须登录，不能绕过 Agent 的鉴权。"""
     for path in ("/api/v1/knowledge/search", "/api/v1/chat"):

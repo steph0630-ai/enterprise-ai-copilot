@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -13,6 +14,7 @@ from app.schemas.user import (
     UserDepartmentUpdate,
     UserLogin,
     UserOut,
+    UserProfileUpdate,
     UserRoleUpdate,
 )
 from app.services import user_service
@@ -37,6 +39,25 @@ def login(data: UserLogin, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserOut)
 def me(current_user: User = Depends(get_current_user)):
     """带 token 访问：返回当前登录用户"""
+    return current_user
+
+
+@router.put("/me", response_model=UserOut)
+def update_me(
+    data: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """用户只能更新自己的姓名和联系方式。"""
+    current_user.name = data.name
+    current_user.email = data.email
+    current_user.phone = data.phone
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="邮箱或手机号已被使用") from exc
+    db.refresh(current_user)
     return current_user
 
 
